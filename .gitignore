@@ -1,0 +1,13 @@
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+build/
+.venv/
+venv/
+
+# Build output (python scripts/build_vsix.py)
+dist/
+
+# Test output (tests/e2e_test.py tests/output)
+tests/output/

@@ -1,0 +1,86 @@
+{
+  "name": "hwp-mcp",
+  "displayName": "HWP MCP — 한글 문서 편집 (AI)",
+  "description": "Lets AI agents (Claude Code, Copilot) create and edit Hangul .hwpx/.hwp documents through an MCP server: character/paragraph formatting, styles, tables, images, page setup. Includes an approximate preview.",
+  "version": "0.1.0",
+  "publisher": "local",
+  "license": "MIT",
+  "engines": {
+    "vscode": "^1.101.0"
+  },
+  "categories": [
+    "AI",
+    "Other"
+  ],
+  "keywords": [
+    "hwp",
+    "hwpx",
+    "hangul",
+    "한글",
+    "mcp"
+  ],
+  "main": "./extension.js",
+  "activationEvents": [
+    "onStartupFinished"
+  ],
+  "contributes": {
+    "mcpServerDefinitionProviders": [
+      {
+        "id": "hwpMcp.server",
+        "label": "HWP 문서 편집 (hwp-mcp)"
+      }
+    ],
+    "customEditors": [
+      {
+        "viewType": "hwpMcp.preview",
+        "displayName": "HWP 미리보기 (근사)",
+        "selector": [
+          { "filenamePattern": "*.hwpx" },
+          { "filenamePattern": "*.hwp" }
+        ],
+        "priority": "default"
+      }
+    ],
+    "commands": [
+      {
+        "command": "hwpMcp.configureClaudeCode",
+        "title": "Claude Code에 HWP MCP 서버 등록 (.mcp.json)",
+        "category": "HWP MCP"
+      },
+      {
+        "command": "hwpMcp.openInHancom",
+        "title": "한컴오피스에서 열기",
+        "category": "HWP MCP"
+      },
+      {
+        "command": "hwpMcp.reinstall",
+        "title": "Python 환경 재설치",
+        "category": "HWP MCP"
+      },
+      {
+        "command": "hwpMcp.showLog",
+        "title": "로그 보기",
+        "category": "HWP MCP"
+      }
+    ],
+    "menus": {
+      "explorer/context": [
+        {
+          "command": "hwpMcp.openInHancom",
+          "when": "resourceExtname == .hwp || resourceExtname == .hwpx",
+          "group": "navigation"
+        }
+      ]
+    },
+    "configuration": {
+      "title": "HWP MCP",
+      "properties": {
+        "hwpMcp.pythonPath": {
+          "type": "string",
+          "default": "",
+          "description": "Python 3.10+ used to create the extension's private environment (~/.hwp-mcp/venv). Empty = auto-detect (py -3, python, python3)."
+        }
+      }
+    }
+  }
+}

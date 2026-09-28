@@ -1,0 +1,16 @@
+{
+  "mcpServers": {
+    "hwp": {
+      "type": "stdio",
+      "command": "C:\\Users\\nysa2\\.hwp-mcp\\venv\\Scripts\\python.exe",
+      "args": [
+        "-m",
+        "hwp_mcp"
+      ],
+      "env": {
+        "PYTHONIOENCODING": "utf-8",
+        "PYTHONUTF8": "1"
+      }
+    }
+  }
+}
