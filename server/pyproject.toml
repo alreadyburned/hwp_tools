@@ -4,14 +4,14 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "hwp-mcp"
-version = "0.1.0"
+version = "0.2.0"
 description = "MCP server for editing Hangul (HWP/HWPX) documents with fine-grained formatting tools"
 requires-python = ">=3.10"
 license = { text = "MIT" }
 dependencies = [
     # Pinned: the table-structure helpers in hwp_mcp.tables use python-hwpx
     # internals (hwpx.table_patch) that are not covered by its public API.
-    "python-hwpx==6.6.0",
+    "python-hwpx[preview]==6.6.0",
     "mcp==1.28.1",
 ]
 

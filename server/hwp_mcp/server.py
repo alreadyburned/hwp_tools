@@ -41,6 +41,11 @@ Formatting is split by kind: character look (font, size, bold, color...) -> hwp_
 paragraph look (alignment, spacing, indents) -> hwp_set_paragraph_format; named styles ->
 hwp_apply_style; cell background/borders -> hwp_format_cells. Text inside table cells is formatted
 with the same text/paragraph tools using cell addresses.
+
+Not covered by these tools (tab stops / table of contents leaders, fixed line spacing, paragraph
+borders, footnotes, hyperlinks, equations, text boxes, floating images, cell diagonals, sections,
+columns, memos, tracked changes, form fields): use the "hwp-direct" skill, which edits the file
+with a Python script (hwp_mcp.api).
 """
 
 mcp = FastMCP("hwp", instructions=INSTRUCTIONS)

@@ -1,6 +1,6 @@
 """Package the extension as a .vsix without Node/vsce.
 
-Usage: python scripts/build_vsix.py   ->  dist/hwp-mcp-<version>.vsix
+Usage: python scripts/build_vsix.py   ->  dist/hwp-tools-<version>.vsix
 """
 
 from __future__ import annotations
@@ -12,7 +12,7 @@ from xml.sax.saxutils import escape
 
 ROOT = Path(__file__).resolve().parent.parent
 FILES = ["package.json", "extension.js", "README.md", "LICENSE.txt"]
-SERVER_GLOBS = ["server/pyproject.toml", "server/hwp_mcp/*.py"]
+SERVER_GLOBS = ["server/pyproject.toml", "server/hwp_mcp/*.py", "skill/hwp-direct/*.md"]
 
 CONTENT_TYPES = """<?xml version="1.0" encoding="utf-8"?>
 <Types xmlns="http://schemas.openxmlformats.org/package/2006/content-types"><Default Extension=".js" ContentType="application/javascript"/><Default Extension=".json" ContentType="application/json"/><Default Extension=".md" ContentType="text/markdown"/><Default Extension=".txt" ContentType="text/plain"/><Default Extension=".py" ContentType="text/plain"/><Default Extension=".toml" ContentType="text/plain"/><Default Extension=".vsixmanifest" ContentType="text/xml"/></Types>"""

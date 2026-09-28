@@ -9,7 +9,7 @@ from lxml import etree as ET
 
 from hwpx import HwpxDocument
 
-from .model import HC, HH, clear_layout_cache, hu_to_mm, normalize_color, run_elements
+from .model import HC, HH, HP, clear_layout_cache, hu_to_mm, normalize_color, run_elements
 from .store import ToolError
 
 # ---------------------------------------------------------------------------
@@ -185,12 +185,20 @@ def describe_para_pr(doc: HwpxDocument, para_pr_id: str | None) -> dict[str, Any
     out: dict[str, Any] = {}
     if pp.align is not None and pp.align.horizontal:
         out["align"] = pp.align.horizontal.lower()
-    ls = pp.line_spacing
-    if ls is not None:
-        if (ls.spacing_type or "").upper() == "PERCENT":
-            out["line_spacing_percent"] = ls.value
+    el = _def_element(doc, "paraProperties", para_pr_id)
+    ls_el = None
+    if el is not None:  # read the <hp:case> branch (or a direct child): <hp:default> holds 2x values
+        ls_el = el.find(f".//{HP}case/{HH}lineSpacing")
+        if ls_el is None:
+            ls_el = el.find(f".//{HH}lineSpacing")
+    if ls_el is not None:
+        kind = ls_el.get("type", "PERCENT").upper()
+        if kind == "PERCENT":
+            out["line_spacing_percent"] = int(ls_el.get("value", "160"))
         else:
-            out["line_spacing"] = f"{ls.value} ({ls.spacing_type})"
+            out["line_spacing"] = f"{kind.lower()} {int(ls_el.get('value', '0')) / 100:g}pt"
+    elif pp.line_spacing is not None:
+        out["line_spacing_percent"] = pp.line_spacing.value
     m = pp.margin
     if m is not None:
         out["space_before_pt"] = round(_num(m.prev) / 100, 1)
@@ -206,7 +214,27 @@ def describe_para_pr(doc: HwpxDocument, para_pr_id: str | None) -> dict[str, Any
     h = pp.heading
     if h is not None and (h.type or "NONE") != "NONE":
         out["numbering"] = f"{h.type.lower()} level {int(h.level or 0) + 1}"
+    if el is not None:
+        border = el.find(f"{HH}border")
+        if border is not None and describe_border_fill(doc, border.get("borderFillIDRef")):
+            out["paragraph_border"] = describe_border_fill(doc, border.get("borderFillIDRef"))
+        tab = _def_element(doc, "tabProperties", el.get("tabPrIDRef"))
+        if tab is not None:
+            items = tab.findall(f".//{HP}case/{HH}tabItem") or tab.findall(f"{HH}tabItem")
+            if items:
+                out["tabs"] = [f'{i.get("type", "LEFT").lower()} {hu_to_mm(int(i.get("pos", "0"))):g}mm'
+                               + (f' {i.get("leader").lower()}' if i.get("leader", "NONE") != "NONE" else "")
+                               for i in items]
     return out
+
+
+def _def_element(doc: HwpxDocument, container: str, def_id: str | None):
+    if def_id is None:
+        return None
+    for el in _header(doc).element.iterfind(f".//{HH}{container}/*"):
+        if el.get("id") == str(def_id):
+            return el
+    return None
 
 
 def short_para_desc(desc: dict[str, Any]) -> str:
@@ -215,6 +243,8 @@ def short_para_desc(desc: dict[str, Any]) -> str:
         parts.append(desc["align"])
     if desc.get("line_spacing_percent") is not None:
         parts.append(f"line {desc['line_spacing_percent']:g}%")
+    if desc.get("line_spacing"):
+        parts.append(f"line {desc['line_spacing']}")
     if desc.get("first_line_indent_mm"):
         parts.append(f"first-line {desc['first_line_indent_mm']:g}mm")
     if desc.get("indent_left_mm"):
@@ -225,6 +255,10 @@ def short_para_desc(desc: dict[str, Any]) -> str:
         parts.append(f"after {desc['space_after_pt']:g}pt")
     if desc.get("numbering"):
         parts.append(desc["numbering"])
+    if desc.get("paragraph_border"):
+        parts.append("border/fill")
+    if desc.get("tabs"):
+        parts.append("tabs " + " ".join(desc["tabs"]))
     return ", ".join(parts)
 
 

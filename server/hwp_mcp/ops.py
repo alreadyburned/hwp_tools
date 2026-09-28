@@ -17,7 +17,7 @@ from hwpx.oxml import HwpxOxmlParagraph
 
 from . import formats, tables
 from .model import (
-    HP, PIC_TAG, RUN_TAG, T_TAG, TBL_TAG, ParaTarget, all_pictures, body_paragraphs, cell_grid, clear_layout_cache,
+    HP, P_TAG, PIC_TAG, RUN_TAG, T_TAG, TBL_TAG, ParaTarget, all_pictures, body_paragraphs, cell_grid, clear_layout_cache,
     first_char_pr, get_table, hu_to_mm, iter_text_paragraphs, merge_adjacent_runs, mm_to_hu, paragraph_text,
     replace_range,
     resolve_cells, resolve_one_paragraph, resolve_paragraphs, run_elements, runs_in_range, t_text,
@@ -42,13 +42,87 @@ def _style_name(doc: HwpxDocument, style_id: str | None) -> str:
     return st.name if st is not None and st.name else f"style {style_id}"
 
 
+_OBJECT_NAMES = {"tbl", "pic", "equation", "rect", "ellipse", "line", "arc", "polygon", "curve", "connectLine",
+                 "container", "textart", "ole", "video", "chart"}
+
+
+def _local(tag: str) -> str:
+    return tag.rsplit("}", 1)[-1]
+
+
 def _para_objects(p_el) -> list:
+    """Tables, pictures, equations and drawing objects anchored in the paragraph's runs."""
     out = []
     for run in run_elements(p_el):
         for child in run:
-            if child.tag in (TBL_TAG, PIC_TAG):
+            if _local(child.tag) in _OBJECT_NAMES:
                 out.append(child)
     return out
+
+
+def _object_label(doc: HwpxDocument, obj, pic_index: dict) -> str:
+    name = _local(obj.tag)
+    if name == "tbl":
+        return f"<table t{_table_index_of(doc, obj)}: {obj.get('rowCnt')} rows x {obj.get('colCnt')} cols>"
+    sz = obj.find(f"{HP}sz")
+    size = f"{hu_to_mm(int(sz.get('width'))):g}x{hu_to_mm(int(sz.get('height'))):g} mm" if sz is not None else ""
+    pos = obj.find(f"{HP}pos")
+    floating = " floating" if pos is not None and pos.get("treatAsChar") == "0" else ""
+    if name == "pic":
+        return f"<image g{pic_index.get(id(obj), '?')}: {size}{floating}>"
+    if name == "equation":
+        script = obj.findtext(f"{HP}script") or ""
+        return f"<equation: {_clip(script, 60)}>"
+    inner = [paragraph_text(p) for p in obj.iter(P_TAG)]
+    if inner and any(inner):
+        return f"<textbox ({_local(obj.tag)}) {size}{floating}: {_clip(' / '.join(inner), 80)}>"
+    return f"<shape {name} {size}{floating}>"
+
+
+def _inline_view(doc: HwpxDocument, p_el, pic_index: dict, max_chars: int) -> str:
+    """Paragraph text with object labels in document order, text clipped to max_chars."""
+    parts: list[str] = []
+    used = hidden = 0
+    for run in run_elements(p_el):
+        for child in run:
+            if child.tag == T_TAG:
+                chunk = t_text(child)
+                keep = chunk[: max(0, max_chars - used)]
+                used += len(keep)
+                hidden += len(chunk) - len(keep)
+                if keep:
+                    parts.append(keep.replace("\t", "\\t").replace("\n", "\\n"))
+            elif _local(child.tag) in _OBJECT_NAMES:
+                parts.append(f" {_object_label(doc, child, pic_index)} ")
+    view = "".join(parts).strip()
+    if hidden:
+        view += f"…(+{hidden} chars)"
+    return view or "(empty)"
+
+
+def _control_notes(p_el) -> list[str]:
+    """Footnotes, endnotes, links, bookmarks and fields in the paragraph (not inside nested objects)."""
+    notes = []
+    for run in run_elements(p_el):
+        for ctrl in run.findall(f"{HP}ctrl"):
+            for c in ctrl:
+                name = _local(c.tag)
+                if name in ("footNote", "endNote"):
+                    text = " ".join(paragraph_text(p) for p in c.iter(P_TAG))
+                    notes.append(f"{'footnote' if name == 'footNote' else 'endnote'}: {_clip(text, 40)}")
+                elif name == "bookmark":
+                    notes.append(f"bookmark {c.get('name')!r}")
+                elif name == "fieldBegin":
+                    kind = c.get("type", "")
+                    if kind == "HYPERLINK":
+                        notes.append(f"link -> {c.get('name')}")
+                    elif kind == "CLICK_HERE":
+                        notes.append(f"form field {c.get('name')!r}")
+                    elif kind == "MEMO":
+                        notes.append("memo")
+                    elif kind:
+                        notes.append(f"field {kind.lower()}")
+    return notes
 
 
 def _page_info(doc: HwpxDocument, section_index: int = 0) -> str:
@@ -76,9 +150,12 @@ def _text_width_hu(doc: HwpxDocument, section_index: int = 0) -> int:
     return int(width) - int(m.left) - int(m.right) - int(m.gutter or 0)
 
 
-def _is_blank_document(doc: HwpxDocument) -> bool:
-    body = body_paragraphs(doc)
-    return len(body) == 1 and paragraph_text(body[0].element) == "" and not _para_objects(body[0].element)
+def _blank_last_section_paragraph(doc: HwpxDocument):
+    """The only paragraph of the last section if it is empty (fresh document or new section), else None."""
+    paras = doc.sections[-1].paragraphs
+    if len(paras) == 1 and paragraph_text(paras[0].element) == "" and not _para_objects(paras[0].element):
+        return paras[0]
+    return None
 
 
 def _move_section_controls(old_first, new_first) -> None:
@@ -267,19 +344,11 @@ def read_document(store: Store, path: str, start: int, limit: int, max_chars: in
     for i in range(start, end):
         p = body[i]
         el = p.element
-        text = paragraph_text(el)
         line = f"p{i} [{_style_name(doc, el.get('styleIDRef'))}] "
-        objs = []
-        for obj in _para_objects(el):
-            if obj.tag == TBL_TAG:
-                ti = _table_index_of(doc, obj)
-                objs.append(f"<table t{ti}: {obj.get('rowCnt')} rows x {obj.get('colCnt')} cols>")
-            else:
-                sz = obj.find(f"{HP}sz")
-                gi = pic_index.get(id(obj), "?")
-                objs.append(f"<image g{gi}: {hu_to_mm(int(sz.get('width'))):g}x{hu_to_mm(int(sz.get('height'))):g} mm>")
-        body_text = _clip(text, max_chars) if text else ("" if objs else "(empty)")
-        line += " ".join(objs + ([body_text] if body_text else []))
+        line += _inline_view(doc, el, pic_index, max_chars)
+        notes = _control_notes(el)
+        if notes:
+            line += "  [" + "; ".join(notes) + "]"
         if show_format:
             pdesc = formats.short_para_desc(formats.describe_para_pr(doc, el.get("paraPrIDRef")))
             cdesc = formats.short_char_desc(formats.describe_char_pr(doc, first_char_pr(el)))
@@ -315,6 +384,7 @@ def get_paragraph(store: Store, path: str, target: str) -> dict[str, Any]:
     doc = store.open(normalize_path(path))
     t = resolve_one_paragraph(doc, target)
     el = t.paragraph.element
+    pics = all_pictures(doc)
     runs, pos = [], 0
     for run in run_elements(el):
         text = "".join(t_text(c) for c in run if c.tag == T_TAG)
@@ -330,9 +400,8 @@ def get_paragraph(store: Store, path: str, target: str) -> dict[str, Any]:
         "style": _style_name(doc, el.get("styleIDRef")),
         "paragraph_format": formats.describe_para_pr(doc, el.get("paraPrIDRef")),
         "runs": runs,
-        "objects": [
-            f"table t{_table_index_of(doc, o)}" if o.tag == TBL_TAG else "image" for o in _para_objects(el)
-        ],
+        "objects": [_object_label(doc, o, {id(g): i for i, g in enumerate(pics)}) for o in _para_objects(el)],
+        "controls": _control_notes(el),
     }
 
 
@@ -371,8 +440,9 @@ def insert_paragraph(store: Store, path: str, text: str, after: str | None, styl
         created = []
         cursor = after
         start_idx = 0
-        if (after is None or after.strip().lower() == "end") and _is_blank_document(doc):
-            p0 = body_paragraphs(doc)[0]
+        blank = _blank_last_section_paragraph(doc) if after is None or after.strip().lower() == "end" else None
+        if blank is not None:
+            p0 = blank
             el = p0.element
             el.set("styleIDRef", str(fmt[0]))
             el.set("paraPrIDRef", str(fmt[1]))
@@ -382,7 +452,7 @@ def insert_paragraph(store: Store, path: str, text: str, after: str | None, styl
             p0.section.mark_dirty()
             created.append(el)
             start_idx = 1
-            cursor = "p0"
+            cursor = _address_of(doc, el)
         for line in lines[start_idx:]:
             p, _ = _new_paragraph(doc, cursor, fmt)
             replace_range(p.element, 0, 0, line, fmt[2])
@@ -410,10 +480,16 @@ def delete_paragraphs(store: Store, path: str, target: str) -> str:
         targets = resolve_paragraphs(doc, target)
         removed, cleared = [], []
         # group by container so we never empty a section or a cell
-        containers: dict[int, list] = {}
+        # (lxml proxies are recreated on access, so never key by id(); compare elements directly)
+        containers: list[tuple[Any, list]] = []
         for t in targets:
-            containers.setdefault(id(t.paragraph.element.getparent()), []).append(t)
-        for group in containers.values():
+            parent = t.paragraph.element.getparent()
+            group = next((g for c, g in containers if c == parent), None)
+            if group is None:
+                containers.append((parent, [t]))
+            else:
+                group.append(t)
+        for _parent, group in containers:
             parent = group[0].paragraph.element.getparent()
             siblings = [c for c in parent if c.tag == HP + "p"]
             doomed = {id(t.paragraph.element) for t in group}
@@ -472,52 +548,67 @@ def replace_text(store: Store, path: str, find: str, replace: str, target: str |
 # ---------------------------------------------------------------------------
 
 
-def format_text(store: Store, path: str, target: str, match: str | None, occurrence: int | None,
-                start: int | None, end: int | None, opts: dict[str, Any]) -> str:
-    kw = formats.char_kwargs(opts)
-    if not kw:
-        raise ToolError("No formatting given. Pass at least one of: " + ", ".join(formats.CHAR_OPTION_KEYS) + ".")
+def apply_to_text(doc: HwpxDocument, target: str, match: str | None, occurrence: int | None,
+                  start: int | None, end: int | None, fn) -> list[str]:
+    """Call fn(runs) on the text runs selected by target + match/occurrence or start/end.
+
+    Runs are split so that the selection boundaries fall on run boundaries. Returns the
+    formatted spans as "address[start:end]" labels; raises if nothing matched.
+    """
     if match is not None and (start is not None or end is not None):
         raise ToolError("Use either match or start/end, not both.")
+    targets = resolve_paragraphs(doc, target)
+    if (start is not None or end is not None) and len(targets) != 1:
+        raise ToolError("start/end offsets need a single-paragraph target.")
+    done: list[str] = []
+    seen = 0
+    for t in targets:
+        el = t.paragraph.element
+        text = paragraph_text(el)
+        if match is not None:
+            spans = [(m.start(), m.end()) for m in re.finditer(re.escape(match), text)]
+            if occurrence is not None:
+                picked = []
+                for s in spans:
+                    seen += 1
+                    if seen == occurrence:
+                        picked.append(s)
+                spans = picked
+        elif start is not None or end is not None:
+            s, e = start or 0, len(text) if end is None else end
+            if not 0 <= s < e <= len(text):
+                raise ToolError(f"Invalid range {s}-{e}: {t.address} has {len(text)} characters.")
+            spans = [(s, e)]
+        else:
+            spans = [(0, len(text))] if text else []
+            if not text:  # empty paragraph: format its runs so typed text picks it up
+                fn(run_elements(el))
+                done.append(t.address)
+        for s, e in reversed(spans):
+            fn(runs_in_range(el, s, e))
+            done.append(f"{t.address}[{s}:{e}]")
+        if spans:
+            merge_adjacent_runs(el)
+            clear_layout_cache(el)
+            t.paragraph.section.mark_dirty()
+    if not done:
+        what = f'"{match}"' + (f" (occurrence {occurrence})" if occurrence else "")
+        raise ToolError(f"{what} was not found in {target}. Nothing changed. Use hwp_find_text to locate text.")
+    return done
+
+
+def format_text(store: Store, path: str, target: str, match: str | None, occurrence: int | None,
+                start: int | None, end: int | None, opts: dict[str, Any], extra: dict[str, Any] | None = None) -> str:
+    """``extra`` passes further python-hwpx ensure_run options (shadow, outline, emboss, ...) - API only."""
+    kw = formats.char_kwargs(opts)
+    kw.update({k: v for k, v in (extra or {}).items() if v is not None})
+    if not kw:
+        raise ToolError("No formatting given. Pass at least one of: " + ", ".join(formats.CHAR_OPTION_KEYS) + ".")
     with _Edit(store, path) as doc:
-        targets = resolve_paragraphs(doc, target)
-        if (start is not None or end is not None) and len(targets) != 1:
-            raise ToolError("start/end offsets need a single-paragraph target.")
-        done: list[str] = []
-        seen = 0
-        for t in targets:
-            el = t.paragraph.element
-            text = paragraph_text(el)
-            if match is not None:
-                spans = [(m.start(), m.end()) for m in re.finditer(re.escape(match), text)]
-                if occurrence is not None:
-                    picked = []
-                    for s in spans:
-                        seen += 1
-                        if seen == occurrence:
-                            picked.append(s)
-                    spans = picked
-            elif start is not None or end is not None:
-                s, e = start or 0, len(text) if end is None else end
-                if not 0 <= s < e <= len(text):
-                    raise ToolError(f"Invalid range {s}-{e}: {t.address} has {len(text)} characters.")
-                spans = [(s, e)]
-            else:
-                spans = [(0, len(text))] if text else []
-                if not text:  # empty paragraph: format its runs so typed text picks it up
-                    formats.apply_char_format(doc, run_elements(el), kw)
-                    done.append(t.address)
-            for s, e in reversed(spans):
-                formats.apply_char_format(doc, runs_in_range(el, s, e), kw)
-                done.append(f"{t.address}[{s}:{e}]")
-            if spans:
-                merge_adjacent_runs(el)
-                clear_layout_cache(el)
-                t.paragraph.section.mark_dirty()
-        if not done:
-            what = f'"{match}"' + (f" (occurrence {occurrence})" if occurrence else "")
-            raise ToolError(f"{what} was not found in {target}. Nothing changed. Use hwp_find_text to locate text.")
-    applied = ", ".join(f"{k}={v}" for k, v in opts.items() if v is not None and k in formats.CHAR_OPTION_KEYS)
+        done = apply_to_text(doc, target, match, occurrence, start, end,
+                             lambda runs: formats.apply_char_format(doc, runs, kw))
+    applied = ", ".join(f"{k}={v}" for k, v in {**opts, **(extra or {})}.items()
+                        if v is not None and (k in formats.CHAR_OPTION_KEYS or k in (extra or {})))
     return f"Applied {applied} to {len(done)} span(s): {', '.join(done[:15])}{' ...' if len(done) > 15 else ''}."
 
 
@@ -563,12 +654,13 @@ def set_list(store: Store, path: str, target: str, kind: str, level: int, bullet
         raise ToolError("level must be between 1 and 7.")
     with _Edit(store, path) as doc:
         targets = resolve_paragraphs(doc, target)
-        body = {id(p.element): i for i, p in enumerate(body_paragraphs(doc))}
+        body = [p.element for p in body_paragraphs(doc)]
         idx = []
         for t in targets:
-            if id(t.paragraph.element) not in body:
+            pos = next((i for i, el in enumerate(body) if el == t.paragraph.element), None)
+            if pos is None:
                 raise ToolError(f"{t.address}: lists can only be applied to body paragraphs (p<N>), not table cells.")
-            idx.append(body[id(t.paragraph.element)])
+            idx.append(pos)
         if kind == "none":
             for t in targets:
                 pp = doc.styles.paragraph_property(t.paragraph.element.get("paraPrIDRef"))

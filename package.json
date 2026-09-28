@@ -1,8 +1,8 @@
 {
-  "name": "hwp-mcp",
-  "displayName": "HWP MCP — 한글 문서 편집 (AI)",
-  "description": "Lets AI agents (Claude Code, Copilot) create and edit Hangul .hwpx/.hwp documents through an MCP server: character/paragraph formatting, styles, tables, images, page setup. Includes an approximate preview.",
-  "version": "0.1.0",
+  "name": "hwp-tools",
+  "displayName": "hwp_tools — 한글 문서 편집 (AI)",
+  "description": "Lets AI agents (Claude Code, Copilot) create and edit Hangul .hwpx/.hwp documents through an MCP server (formatting, styles, tables, images, page setup) and a Python scripting skill for advanced features (tabs, footnotes, equations, text boxes, sections, tracked changes...). Includes an approximate preview.",
+  "version": "0.2.0",
   "publisher": "local",
   "license": "MIT",
   "engines": {
@@ -27,7 +27,7 @@
     "mcpServerDefinitionProviders": [
       {
         "id": "hwpMcp.server",
-        "label": "HWP 문서 편집 (hwp-mcp)"
+        "label": "HWP 문서 편집 (hwp_tools)"
       }
     ],
     "customEditors": [
@@ -44,23 +44,23 @@
     "commands": [
       {
         "command": "hwpMcp.configureClaudeCode",
-        "title": "Claude Code에 HWP MCP 서버 등록 (.mcp.json)",
-        "category": "HWP MCP"
+        "title": "Claude Code에 HWP MCP 서버·스킬 등록 (.mcp.json, .claude/skills)",
+        "category": "hwp_tools"
       },
       {
         "command": "hwpMcp.openInHancom",
         "title": "한컴오피스에서 열기",
-        "category": "HWP MCP"
+        "category": "hwp_tools"
       },
       {
         "command": "hwpMcp.reinstall",
         "title": "Python 환경 재설치",
-        "category": "HWP MCP"
+        "category": "hwp_tools"
       },
       {
         "command": "hwpMcp.showLog",
         "title": "로그 보기",
-        "category": "HWP MCP"
+        "category": "hwp_tools"
       }
     ],
     "menus": {
@@ -73,7 +73,7 @@
       ]
     },
     "configuration": {
-      "title": "HWP MCP",
+      "title": "hwp_tools",
       "properties": {
         "hwpMcp.pythonPath": {
           "type": "string",

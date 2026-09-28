@@ -1,4 +1,4 @@
-// HWP MCP VS Code extension.
+// hwp_tools VS Code extension.
 //  - keeps a private Python environment (~/.hwp-mcp/venv) with the bundled hwp_mcp server
 //  - registers that server with VS Code's MCP support (Copilot / agent mode)
 //  - writes .mcp.json so Claude Code can use it
@@ -11,7 +11,7 @@ const fs = require('fs');
 const os = require('os');
 const path = require('path');
 
-const SERVER_LABEL = 'HWP 문서 편집 (hwp-mcp)';
+const SERVER_LABEL = 'HWP 문서 편집 (hwp_tools)';
 const SERVER_ENV = { PYTHONIOENCODING: 'utf-8', PYTHONUTF8: '1' };
 
 let log;
@@ -120,7 +120,7 @@ function ensureEnvironment(context, force = false) {
     await withInstallLock(async () => {
       if (!force && ready()) return; // another window finished while we waited
       await vscode.window.withProgress(
-        { location: vscode.ProgressLocation.Notification, title: 'HWP MCP: Python 환경 준비 중' },
+        { location: vscode.ProgressLocation.Notification, title: 'hwp_tools: Python 환경 준비 중' },
         async (progress) => {
           if (force && fs.existsSync(path.join(envRoot(), 'venv'))) {
             fs.rmSync(path.join(envRoot(), 'venv'), { recursive: true, force: true });
@@ -180,7 +180,7 @@ function registerMcpProvider(context) {
 async function pickWorkspaceFolder() {
   const folders = vscode.workspace.workspaceFolders || [];
   if (folders.length === 0) {
-    vscode.window.showErrorMessage('HWP MCP: 먼저 폴더(워크스페이스)를 여세요.');
+    vscode.window.showErrorMessage('hwp_tools: 먼저 폴더(워크스페이스)를 여세요.');
     return undefined;
   }
   if (folders.length === 1) return folders[0];
@@ -197,15 +197,19 @@ async function configureClaudeCode(context) {
     try {
       config = JSON.parse(fs.readFileSync(file, 'utf8'));
     } catch (err) {
-      vscode.window.showErrorMessage(`HWP MCP: ${file}을 읽을 수 없습니다 (JSON 오류). 직접 고친 뒤 다시 실행하세요.`);
+      vscode.window.showErrorMessage(`hwp_tools: ${file}을 읽을 수 없습니다 (JSON 오류). 직접 고친 뒤 다시 실행하세요.`);
       return;
     }
   }
   config.mcpServers = config.mcpServers || {};
   config.mcpServers.hwp = serverConfig();
   fs.writeFileSync(file, JSON.stringify(config, null, 2) + '\n', 'utf8');
+  // The "hwp-direct" skill: scripted editing with hwp_mcp.api for what the MCP tools do not cover.
+  const skillDir = path.join(folder.uri.fsPath, '.claude', 'skills', 'hwp-direct');
+  fs.cpSync(path.join(context.extensionPath, 'skill', 'hwp-direct'), skillDir, { recursive: true });
   vscode.window.showInformationMessage(
-    `HWP MCP: ${file}에 "hwp" 서버를 등록했습니다. Claude Code를 다시 시작한 뒤 /mcp에서 확인하세요.`
+    `hwp_tools: .mcp.json에 "hwp" 서버를, .claude/skills/hwp-direct에 스킬을 설치했습니다. ` +
+      'Claude Code를 다시 시작한 뒤 /mcp에서 확인하세요.'
   );
 }
 
@@ -278,7 +282,7 @@ class PreviewProvider {
 
 // ---------------------------------------------------------------------------
 function activate(context) {
-  log = vscode.window.createOutputChannel('HWP MCP');
+  log = vscode.window.createOutputChannel('hwp_tools');
   context.subscriptions.push(log);
 
   registerMcpProvider(context);
@@ -289,12 +293,12 @@ function activate(context) {
       supportsMultipleEditorsPerDocument: true,
     }),
     vscode.commands.registerCommand('hwpMcp.configureClaudeCode', () =>
-      configureClaudeCode(context).catch((err) => vscode.window.showErrorMessage(`HWP MCP: ${err.message}`))
+      configureClaudeCode(context).catch((err) => vscode.window.showErrorMessage(`hwp_tools: ${err.message}`))
     ),
     vscode.commands.registerCommand('hwpMcp.reinstall', () =>
       ensureEnvironment(context, true).then(
-        () => vscode.window.showInformationMessage('HWP MCP: Python 환경을 다시 설치했습니다.'),
-        (err) => vscode.window.showErrorMessage(`HWP MCP: ${err.message}`)
+        () => vscode.window.showInformationMessage('hwp_tools: Python 환경을 다시 설치했습니다.'),
+        (err) => vscode.window.showErrorMessage(`hwp_tools: ${err.message}`)
       )
     ),
     vscode.commands.registerCommand('hwpMcp.openInHancom', (uri) => {
@@ -307,7 +311,7 @@ function activate(context) {
   // Prepare the environment in the background so the first tool call is fast.
   ensureEnvironment(context).catch((err) => {
     log.appendLine(String(err.stack || err));
-    vscode.window.showErrorMessage(`HWP MCP: Python 환경 준비 실패 — ${err.message}`, '로그 보기').then((choice) => {
+    vscode.window.showErrorMessage(`hwp_tools: Python 환경 준비 실패 — ${err.message}`, '로그 보기').then((choice) => {
       if (choice) log.show();
     });
   });
