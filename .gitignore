@@ -11,3 +11,5 @@ dist/
 
 # Test output (tests/e2e_test.py tests/output)
 tests/output/
+
+samples
