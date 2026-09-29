@@ -59,6 +59,14 @@ async function runChecked(command, args, options) {
   return r;
 }
 
+// Prints "ok", "old <version>", or "novenv" (Debian/Ubuntu ship venv/ensurepip in python3-venv).
+const PYTHON_CHECK = [
+  'import sys, importlib.util as u',
+  "if sys.version_info < (3, 10): print('old %d.%d' % sys.version_info[:2])",
+  "elif not (u.find_spec('venv') and u.find_spec('ensurepip')): print('novenv')",
+  "else: print('ok')",
+].join('\n');
+
 async function findBasePython() {
   const configured = vscode.workspace.getConfiguration('hwpMcp').get('pythonPath');
   const candidates = configured
@@ -66,11 +74,20 @@ async function findBasePython() {
     : process.platform === 'win32'
       ? [['py', ['-3']], ['python', []], ['python3', []]]
       : [['python3', []], ['python', []]];
+  const problems = [];
   for (const [cmd, pre] of candidates) {
-    const r = await run(cmd, [...pre, '-c', 'import sys; print(sys.version_info >= (3, 10))']);
-    if (r.code === 0 && r.stdout.trim() === 'True') return { cmd, pre };
+    const r = await run(cmd, [...pre, '-c', PYTHON_CHECK]);
+    const status = r.code === 0 ? r.stdout.trim() : '';
+    if (status === 'ok') return { cmd, pre };
+    const name = [cmd, ...pre].join(' ');
+    if (status.startsWith('old ')) problems.push(`${name}은 Python ${status.slice(4)}`);
+    else if (status === 'novenv') problems.push(`${name}에 venv 모듈 없음 (Debian/Ubuntu: sudo apt install python3-venv)`);
   }
-  throw new Error('Python 3.10 이상을 찾을 수 없습니다. Python을 설치하거나 설정 hwpMcp.pythonPath를 지정하세요.');
+  const tried = candidates.map(([cmd, pre]) => [cmd, ...pre].join(' ')).join(', ');
+  throw new Error(
+    `Python 3.10 이상을 찾을 수 없습니다 (시도: ${tried}${problems.length ? '; ' + problems.join('; ') : ''}). ` +
+      'Python을 설치하거나 설정 hwpMcp.pythonPath를 지정하세요.'
+  );
 }
 
 /** Cross-process lock (several VS Code windows share ~/.hwp-mcp). */

@@ -16,10 +16,13 @@ Claude Code, VS Code Copilot(에이전트 모드), Roo Code / Zoo Code, Kilo Cod
 
 ## 설치
 
-1. `python scripts/build_vsix.py` → `dist/hwp-tools-<버전>.vsix`
-2. `code --install-extension dist/hwp-tools-<버전>.vsix` (확장 ID `local.hwp-tools`; VS Code 확장 ID에는 `_`를 쓸 수 없어 `-` 사용)
-3. VS Code 재시작 → 첫 실행 시 Python 환경을 자동 설치(인터넷 필요, 1회)
-4. 명령 팔레트 → **hwp_tools: AI 에이전트에 HWP 도구 등록** → 쓸 에이전트를 고름(여러 개 가능) → 각 에이전트에서 MCP 서버 목록을 새로 고치거나 VS Code 창을 다시 로드
+1. 설치 스크립트 실행 - 필요한 도구(Python 3.10+와 venv, VS Code 명령줄 도구 `code` 1.101+)를 먼저 검사하고, 하나라도 없으면 무엇을 설치해야 하는지 알려 주고 **설치하지 않고 멈춥니다**. 모두 있으면 `.vsix`를 빌드해 VS Code에 설치합니다(확장 ID `local.hwp-tools`; VS Code 확장 ID에는 `_`를 쓸 수 없어 `-` 사용).
+   - Linux/macOS: `sh scripts/install.sh` (`python3`, `python` 순서로 찾음. Debian/Ubuntu는 `python3-venv` 패키지도 필요)
+   - Windows: `powershell -ExecutionPolicy Bypass -File scripts\install.ps1` (`py -3`, `python`, `python3` 순서로 찾음)
+   - 다른 Python이나 VS Code 계열 편집기를 쓰려면 환경 변수 `PYTHON`, `CODE`로 지정합니다(예: `PYTHON=/opt/py312/bin/python3 CODE=codium sh scripts/install.sh`). PATH에 없는 Python이라면 VS Code 설정 `hwpMcp.pythonPath`에도 같은 경로를 넣으세요.
+   - 직접 하려면: `python3 scripts/build_vsix.py` → `code --install-extension dist/hwp-tools-<버전>.vsix`
+2. VS Code 재시작 → 첫 실행 시 Python 환경을 자동 설치(인터넷 필요, 1회)
+3. 명령 팔레트 → **hwp_tools: AI 에이전트에 HWP 도구 등록** → 쓸 에이전트를 고름(여러 개 가능) → 각 에이전트에서 MCP 서버 목록을 새로 고치거나 VS Code 창을 다시 로드
    (Claude Code만 쓸 때는 **hwp_tools: Claude Code에 HWP MCP 서버·스킬 등록** 명령도 그대로 쓸 수 있습니다.)
 
 요구 사항: Python 3.10+, VS Code 1.101+.
