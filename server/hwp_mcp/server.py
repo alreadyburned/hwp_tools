@@ -32,8 +32,9 @@ These files are binary/zip: never read or write them as text; always use these t
 
 Workflow
 1. Find what to edit. Short document: hwp_read_document lists every paragraph with its address.
-   Long document (it says so): hwp_outline for the section map, then hwp_read_document(range="s2.1")
-   for one section, or hwp_search to find the paragraphs about a topic.
+   Long document (it says so): hwp_outline for the section map (with pages), then
+   hwp_read_document(range="s2.1") for one section or range="page5" for one page, or hwp_search to
+   find the paragraphs about a topic (also searches headers/footers, footnotes, text boxes).
 2. Edit with the other tools. Every edit is validated and saved to the file immediately
    (no open/save step). hwp_undo reverts the last edit of a file.
 3. Check: each edit result shows the affected text as it is now. hwp_diff lists everything the
@@ -64,8 +65,8 @@ with a Python script (hwp_mcp.api).
 BASIC_INSTRUCTIONS = """\
 Tools for Hangul documents (.hwpx, .hwp). These files are binary: never read or write them as
 text; always use these tools with the absolute file path.
-1. Find: hwp_outline shows the sections of a long document. Then hwp_read_document(range="s2")
-   reads one section, or hwp_search("words") finds the paragraphs about a topic.
+1. Find: hwp_outline shows the sections and their pages. Then hwp_read_document(range="s2")
+   reads one section (range="page5" one page), or hwp_search("words") finds the paragraphs about a topic.
 2. Edit: hwp_replace_text, hwp_set_paragraph_text, hwp_insert_paragraph, hwp_delete_paragraphs,
    hwp_set_cell_text. Each edit is saved at once.
 3. Check: read the "Now:" lines of the edit result, then hwp_diff shows everything the edit
@@ -152,7 +153,8 @@ def hwp_read_document(
     range: Annotated[
         str | None,
         Field(description='Part to read. Omit for the start of the document. A section id from hwp_outline '
-              '("s2", "s2.1"), paragraphs ("p10-p40", "p10-" to the end, "p10"), or a table ("t3", "t3.r20-").'),
+              '("s2", "s2.1"), paragraphs ("p10-p40", "p10-" to the end, "p10"), a table ("t3", "t3.r20-"), '
+              'or pages ("page5", "page5-7").'),
     ] = None,
     max_chars: Annotated[int, Field(description="Truncate each paragraph's text to this many characters.", ge=20)] = 600,
     show_format: Annotated[bool, Field(description="Also show a short paragraph/character format summary per paragraph.")] = False,
@@ -170,8 +172,9 @@ def hwp_outline(
     depth: Annotated[int | None, Field(description="Heading levels to show (default: as many as fit).", ge=1, le=10)] = None,
 ) -> str:
     """Section map of the document: one line per heading with its section id (s1, s2.1, ...),
-    paragraph range, and size. Use it to navigate long documents, then read one section with
-    hwp_read_document(range="<section id>")."""
+    paragraph range, pages and size. Use it to navigate long documents, then read one section with
+    hwp_read_document(range="<section id>"). Page numbers are exact for files saved by Hancom and
+    estimated otherwise (the result says which)."""
     return _run(reader.outline, path, section, depth, OUTLINE_LINES)
 
 

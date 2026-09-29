@@ -54,7 +54,7 @@ print(doc.save())                                  # validates; raises and write
 ## API
 
 ### Same as the MCP tools (no `path` argument, no `hwp_` prefix)
-`read(range=None, max_chars=600, show_format=False)` (range: section id `"s2.1"`, `"p10-p40"`, `"p10-"`, `"t3"`; output is size-limited and says where to continue), `outline(section=None, depth=None)`, `search(query, max_results=10)`, `get_paragraph(t)`, `find_text(text)`,
+`read(range=None, max_chars=600, show_format=False)` (range: section id `"s2.1"`, `"p10-p40"`, `"p10-"`, `"t3"`, `"page5"`; output is size-limited and says where to continue), `outline(section=None, depth=None)`, `search(query, max_results=10)`, `get_paragraph(t)`, `find_text(text)`,
 `insert_paragraph(text, after=None|"start"|"end"|addr, style=None, like=None)` ("\n" = new paragraph, "\t" = tab),
 `set_paragraph_text(t, text)`, `replace_text(find, replace, target=None)`, `delete_paragraphs(t)`,
 `format_text(t, match=None, occurrence=None, start=None, end=None, font=, size_pt=, bold=, italic=, underline=, strikethrough=, color=, highlight=, superscript=, subscript=, char_width_percent=, letter_spacing_percent=)`,

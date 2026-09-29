@@ -23,8 +23,9 @@ from typing import Any
 from hwpx import HwpxDocument
 
 from . import embed, formats
+from .pages import PageInfo, page_info
 from .model import (
-    T_TAG, all_pictures, body_paragraphs, first_char_pr, get_table, hu_to_mm, paragraph_text,
+    P_TAG, T_TAG, all_pictures, body_paragraphs, first_char_pr, get_table, hu_to_mm, paragraph_text,
     run_elements, run_text, t_text, table_cells, top_tables,
 )
 from .ops import (
@@ -60,6 +61,7 @@ class DocMap:
     images: list[int]               # images per body paragraph
     sections: list[Section]         # top-level sections, in order
     method: str                     # how headings were found
+    pages: PageInfo                 # page of each paragraph
 
     def all_sections(self) -> list[Section]:
         out: list[Section] = []
@@ -92,11 +94,14 @@ _GA = "가나다라마바사아자차카타파하"
 # Numbering patterns that mark headings, in the conventional Korean hierarchy (행정업무운영 편람:
 # 1. -> 가. -> 1) -> 가) -> (1) -> (가)); a document's levels are the patterns it uses, in this order.
 _PATTERNS: list[tuple[str, re.Pattern]] = [
+    # appendices: "붙임 1. 세부 계획", "[참고 1] 해외 사례", "<별첨>" - but not "참고로 ..."
+    ("붙임", re.compile(r"^[\[<〈【(]?\s*(?:붙임|첨부|별첨|별지|참고)\s*\d{0,2}\s*(?:[\]>〉】).:]|\s|$)")),
     ("제N편/장", re.compile(r"^제\s*\d+\s*[편장부](?:\s|$)")),
     ("제N절", re.compile(r"^제\s*\d+\s*절(?:\s|$)")),
     ("제N조", re.compile(r"^제\s*\d+\s*조(?:의\s*\d+)?\s*[(\s]")),
     ("Ⅰ.", re.compile(r"^[Ⅰ-Ⅿ]+\s*[.)]?\s*\S")),
     ("I.", re.compile(r"^(?:I|II|III|IV|V|VI|VII|VIII|IX|X)\.\s")),
+    ("【제목】", re.compile(r"^[\[【<〈《]\s*[^\]】>〉》]{1,40}?\s*[\]】>〉》]\s*$")),  # a whole line in brackets
     ("1.", re.compile(r"^\d{1,2}\.\s*[^\d\s.]")),
     ("1.1", re.compile(r"^\d{1,2}\.\d{1,2}\.?\s+\S")),
     ("1.1.1", re.compile(r"^\d{1,2}\.\d{1,2}\.\d{1,2}\.?\s+\S")),
@@ -107,7 +112,7 @@ _PATTERNS: list[tuple[str, re.Pattern]] = [
     ("(1)", re.compile(r"^\(\d{1,2}\)\s*\S")),
     ("(가)", re.compile(rf"^\([{_GA}]\)\s*\S")),
 ]
-_LONG_OK = {"제N편/장", "제N절", "제N조"}  # these stay headings even when the line is long
+_LONG_OK = {"붙임", "제N편/장", "제N절", "제N조"}  # these stay headings even when the line is long
 _SENTENCE_END = re.compile(r"(?:다|요|음|함|임|됨|것)\s*[.。]?\s*$")
 _OUTLINE_STYLE = re.compile(r"^(?:개요|제목|heading)\s*(\d+)$", re.IGNORECASE)
 _MAX_LEVELS = 4
@@ -256,7 +261,81 @@ def build_map(doc: HwpxDocument) -> DocMap:
     else:
         sections = _fixed_parts(texts, chars, n)
         method = f"none found; fixed parts of about {PART_CHARS} characters"
-    return DocMap(body, texts, tables_at, chars, images, sections, method)
+    return DocMap(body, texts, tables_at, chars, images, sections, method, page_info(doc, body))
+
+
+@dataclass
+class Extra:
+    """Text outside the body paragraphs and top-level table cells."""
+    kind: str       # header, footer, footnote, endnote, textbox, inner table
+    label: str      # shown as its address, e.g. "p12 footnote 3", "t0.r1.c2 inner table r0.c1"
+    index: int      # the body paragraph it is anchored in
+    paragraphs: list
+
+    @property
+    def text(self) -> str:
+        return "\n".join(paragraph_text(p) for p in self.paragraphs)
+
+
+_EXTRA_KINDS = {"header": "header", "footer": "footer", "footNote": "footnote", "endNote": "endnote",
+                "drawText": "textbox"}
+
+
+def extras(doc: HwpxDocument, m: DocMap) -> list[Extra]:
+    """Headers/footers, footnotes/endnotes, text boxes and tables inside table cells, in document order."""
+    section_of = {id(s.element): n for n, s in enumerate(doc.sections)}
+    top = top_tables(doc)
+    out: list[Extra] = []
+    numbers: Counter = Counter()
+    seen_hf: set[tuple] = set()  # python-hwpx writes a header/footer twice (in secPr and as a control)
+    for i, p in enumerate(m.body):
+        el = p.element
+        groups: list[tuple[Any, str, str, list]] = []  # (container, kind, label, paragraphs)
+        for sub in el.iter(P_TAG):
+            if sub is el:
+                continue
+            chain = []
+            node = sub.getparent()
+            while node is not None and node is not el:
+                chain.append(node)  # innermost first
+                node = node.getparent()
+            container, kind = None, None
+            for n in chain:
+                if _local(n.tag) in _EXTRA_KINDS:
+                    container, kind = n, _EXTRA_KINDS[_local(n.tag)]
+                    break
+            if container is None:
+                tables = [n for n in chain if _local(n.tag) == "tbl"]
+                if len(tables) < 2:
+                    continue  # a top-level table cell: already covered by t<N>.r<R>.c<C>
+                container, kind = next(n for n in chain if _local(n.tag) == "tc"), "inner table"
+            group = next((g for g in groups if g[0] is container), None)
+            if group is None and kind in ("header", "footer"):
+                key = (kind, container.get("id"), id(p.section.element))
+                if key in seen_hf:
+                    continue
+                seen_hf.add(key)
+            if group is None:
+                group = (container, kind, _extra_label(kind, container, chain, i, p, section_of, top, numbers), [])
+                groups.append(group)
+            group[3].append(sub)
+        out.extend(Extra(kind, label, i, paras) for _, kind, label, paras in groups)
+    return out
+
+
+def _extra_label(kind, container, chain, i, p, section_of, top, numbers) -> str:
+    if kind in ("header", "footer"):
+        return f"{kind} (section {section_of.get(id(p.section.element), 0)})"
+    if kind == "inner table":
+        cells = [n for n in chain if _local(n.tag) == "tc"]
+        outer_tc, outer_tbl = cells[-1], [n for n in chain if _local(n.tag) == "tbl"][-1]
+        ti = next((k for k, (t, _) in enumerate(top) if t.element is outer_tbl), "?")
+        addr = outer_tc.find(HP + "cellAddr")
+        inner = container.find(HP + "cellAddr")
+        return (f"t{ti}.r{addr.get('rowAddr')}.c{addr.get('colAddr')} inner table "
+                f"r{inner.get('rowAddr')}.c{inner.get('colAddr')}")
+    numbers[kind] += 1
+    return f"p{i} {kind} {numbers[kind]}"
 
 
 def _stats(m: DocMap, sec: Section) -> str:
@@ -271,6 +350,13 @@ def _stats(m: DocMap, sec: Section) -> str:
         parts.append(f"{nimg} image")
     parts.append(f"{_kchars(total)} chars")
     return ", ".join(parts)
+
+
+def _page_count(m: DocMap) -> str:
+    n = m.pages.count
+    if m.pages.exact:
+        return f"{n} page(s)"
+    return f"about {n} page(s) (page numbers are estimated; Hancom may differ slightly)"
 
 
 def _kchars(n: int) -> str:
@@ -311,8 +397,9 @@ def outline(store: Store, path: str, section: str | None = None, depth: int | No
     head = [
         f"{os.path.basename(path)}: {len(m.body)} paragraphs (p0-p{len(m.body) - 1}), "
         f"{sum(len(v) for v in m.tables_at.values())} table(s), {sum(m.images)} image(s), "
-        f"about {_kchars(total_chars)} characters. Headings: {m.method}.",
-        'Read a section with hwp_read_document(range="s2.1"), or find text with hwp_search.',
+        f"about {_kchars(total_chars)} characters, {_page_count(m)}. Headings: {m.method}.",
+        'Read a section with hwp_read_document(range="s2.1") or a page with range="page3"; '
+        'find text with hwp_search.',
     ]
     lines: list[str] = []
     hidden = 0
@@ -323,7 +410,8 @@ def outline(store: Store, path: str, section: str | None = None, depth: int | No
             if d > depth:
                 hidden += 1 + len(_descendants(s))
                 continue
-            lines.append(f"{'  ' * (d - 1)}{s.sid}  {_span(s)}  {_clip(s.title, 60)}  ({_stats(m, s)})")
+            lines.append(f"{'  ' * (d - 1)}{s.sid}  {_span(s)}  {m.pages.label(s.start, s.end)}  "
+                         f"{_clip(s.title, 60)}  ({_stats(m, s)})")
             emit(s.children, d + 1)
     emit(roots, 1)
     if hidden:
@@ -345,13 +433,15 @@ def _descendants(sec: Section) -> list[Section]:
 _P_RANGE = re.compile(r"^p(\d+)(?:-(?:p?(\d+))?)?$")
 _T_RANGE = re.compile(r"^t(\d+)(?:\.r(\d+)(?:-(?:r?(\d+))?)?)?$")
 _S_RANGE = re.compile(r"^s\d+(?:\.\d+)*$")
+_PAGE_RANGE = re.compile(r"^(?:page|pg)(\d+)(?:-(\d+))?$|^(\d+)(?:-(\d+))?(?:쪽|페이지)$")
 
 
 def read_document(store: Store, path: str, range_: str | None = None, max_chars: int = 600,
                   show_format: bool = False, budget: int = READ_BUDGET) -> str:
     """List paragraphs (and tables) of the whole document or of one range, within ``budget``
     characters. Ranges: "s2.1" (a section from hwp_outline), "p10-p40", "p10-" (to the end),
-    "p10" (one paragraph), "t3" (a whole table), "t3.r20-" (table rows from 20)."""
+    "p10" (one paragraph), "t3" (a whole table), "t3.r20-" (table rows from 20), "page5" or
+    "page5-7" (paragraphs on those pages; also "5쪽", "5페이지")."""
     path = normalize_path(path)
     doc = store.open(path)
     m = build_map(doc)
@@ -374,17 +464,30 @@ def read_document(store: Store, path: str, range_: str | None = None, max_chars:
     if not spec:
         start, end = 0, n - 1
         lines.append(f"Page: {_page_info(doc)}")
+        for x in extras(doc, m):
+            if x.kind in ("header", "footer"):
+                lines.append(f"{x.label[0].upper()}{x.label[1:]}: {_clip(x.text, 120) or '(page number / field only)'}")
         if sum(m.chars) > budget:
             lines.append("Large document: this shows the beginning only. Call hwp_outline for the section map "
                          "and read one section at a time, or use hwp_search.")
     elif _S_RANGE.match(spec):
         sec = m.find(spec)
         start, end = sec.start, sec.end
+    elif _PAGE_RANGE.match(spec):
+        g = _PAGE_RANGE.match(spec).groups()
+        first = int(g[0] or g[2])
+        last = int(g[1] or g[3] or first)
+        first, last = min(first, last), max(first, last)
+        on = [i for i, (a, b) in enumerate(m.pages.spans) if a <= last and b >= first]
+        if not on:
+            raise ToolError(f"page {first} is out of range: the document has {_page_count(m)}.")
+        start, end = on[0], on[-1]
     else:
         pm = _P_RANGE.match(spec)
         if not pm:
             raise ToolError(f'Invalid range "{range_}". Use a section id from hwp_outline ("s2", "s2.1"), '
-                            'paragraphs ("p10-p40", "p10-" to the end, "p10") or a table ("t3", "t3.r20-").')
+                            'paragraphs ("p10-p40", "p10-" to the end, "p10"), a table ("t3", "t3.r20-") '
+                            'or pages ("page5", "page5-7").')
         start = int(pm.group(1))
         if pm.group(2):
             end = int(pm.group(2))
@@ -400,10 +503,20 @@ def read_document(store: Store, path: str, range_: str | None = None, max_chars:
     where = m.path_of(start)
     if where and spec:
         lines.append("In: " + " > ".join(f"{s.sid} {_clip(s.title, 30)}" for s in where))
-    lines.append(f"--- p{start}-p{end} ---")
+    approx = "" if m.pages.exact else " (estimated)"
+    lines.append(f"--- p{start}-p{end}, {m.pages.label(start, end)}{approx} ---")
     used = sum(len(x) + 1 for x in lines)
+    page = m.pages.spans[start][0]
     for i in range(start, end + 1):
-        chunk = [paragraph_line(doc, m.body[i].element, f"p{i}", pic_index, max_chars, show_format)]
+        chunk = []
+        if m.pages.spans[i][0] > page:  # mark where a new page starts
+            page = m.pages.spans[i][0]
+            chunk.append(f"--- page {page} ---")
+        line = paragraph_line(doc, m.body[i].element, f"p{i}", pic_index, max_chars, show_format)
+        if m.pages.spans[i][1] > m.pages.spans[i][0]:
+            line += f"  (continues to page {m.pages.spans[i][1]})"
+        chunk.append(line)
+        page = max(page, m.pages.spans[i][1])
         for ti in m.tables_at.get(i, []):
             rows = table_rows(doc, ti, min(max_chars, 80))
             if len(rows) > 30:
@@ -468,6 +581,9 @@ class _Unit:
 
 def _units(doc: HwpxDocument, m: DocMap) -> list[_Unit]:
     units = []
+    extra_at: dict[int, list[Extra]] = {}
+    for x in extras(doc, m):
+        extra_at.setdefault(x.index, []).append(x)
     for i, text in enumerate(m.texts):
         if text.strip():
             units.append(_Unit(f"p{i}", i, text, text))
@@ -480,6 +596,10 @@ def _units(doc: HwpxDocument, m: DocMap) -> list[_Unit]:
                 if text.replace("|", "").strip():
                     shown = " | ".join(f"c{ci.col}: {_clip(ci.cell.text, 40)}" for ci in cells)
                     units.append(_Unit(f"t{ti}.r{r}", i, text, shown))
+        for x in extra_at.get(i, []):
+            text = x.text
+            if text.strip():
+                units.append(_Unit(x.label, i, text, text))
     return units
 
 
@@ -542,12 +662,17 @@ def search(store: Store, path: str, query: str, max_results: int = 10) -> str:
     sims, note = embed.similarities([_embed_text(m, u) for u in units], q)
     if sims is not None:
         # Reciprocal rank fusion of the keyword ranking and the meaning ranking.
-        by_meaning = sorted((i for i, s in enumerate(sims) if s is not None), key=lambda i: sims[i], reverse=True)
+        # Headings and very short parts resemble every short query, so they only come from keywords.
+        headings = {s.start for s in m.all_sections()}
+        eligible = [i for i, s in enumerate(sims) if s is not None and len(units[i].text.strip()) >= MEANING_MIN_CHARS
+                    and not (units[i].address.startswith("p") and units[i].index in headings
+                             and units[i].address == f"p{units[i].index}")]
+        by_meaning = sorted(eligible, key=lambda i: sims[i], reverse=True)
         if by_meaning:
             # Similarities of unrelated text are not near zero (e5: ~0.75), so keep only the parts that
-            # stand out: at least halfway from the median to the best one. Works for any model's scale.
+            # stand out from the rest, measured from the median; works for any model's scale.
             best, median = sims[by_meaning[0]], sims[by_meaning[len(by_meaning) // 2]]
-            floor = median + (best - median) / 2
+            floor = median + (best - median) * MEANING_FLOOR
             by_meaning = [i for i in by_meaning[:max(20, 2 * max_results)] if sims[i] >= floor or i in ranked]
         fused: Counter = Counter()
         for ranking in (ranked, by_meaning):
@@ -568,7 +693,8 @@ def search(store: Store, path: str, query: str, max_results: int = 10) -> str:
     for i in ranked[:max_results]:
         u = units[i]
         where = m.path_of(u.index)
-        sec = f"[{where[-1].sid} {_clip(where[-1].title, 24)}] " if where else ""
+        page = f"page {m.pages.spans[u.index][0]}"
+        sec = f"[{where[-1].sid} {_clip(where[-1].title, 24)}, {page}] " if where else f"[{page}] "
         body = _snippet(u.display, q, idf) if u.address.startswith("p") else _clip(u.display, 240)
         lines.append(f"{'*' if exact[i] else '~' if i in meaning_only else ' '}{u.address} {sec}{body}")
     if len(ranked) > max_results:
@@ -577,6 +703,10 @@ def search(store: Store, path: str, query: str, max_results: int = 10) -> str:
 
 
 RRF_K = 60
+# Tuned on 15 Korean paraphrase queries with multilingual-e5-small: excluding headings/short parts and
+# a floor of 0.8 found 13/15 targets (all ranked first) at 87% precision, vs 12/15 at 32% before.
+MEANING_FLOOR = 0.8
+MEANING_MIN_CHARS = 15
 
 
 def _embed_text(m: DocMap, u: _Unit) -> str:
@@ -668,6 +798,9 @@ def _items(doc: HwpxDocument) -> tuple[list[_Item], list[str]]:
     tables_at: dict[int, list[tuple[int, Any]]] = {}
     for ti, (tbl, pi) in enumerate(top_tables(doc)):
         tables_at.setdefault(pi, []).append((ti, tbl))
+    extra_at: dict[int, list[Extra]] = {}
+    for x in extras(doc, build_map(doc)):
+        extra_at.setdefault(x.index, []).append(x)
     items = []
     for i, p in enumerate(body_paragraphs(doc)):
         items.append(d.item(f"p{i}", "", [p.element]))
@@ -678,6 +811,8 @@ def _items(doc: HwpxDocument) -> tuple[list[_Item], list[str]]:
                 cell = ", ".join(f"{k} {v}" for k, v in sorted(fill.items())) if fill else ""
                 paras = [cp.element for cp in ci.cell.paragraphs]
                 items.append(d.item(f"t{ti}.r{ci.row}.c{ci.col}", f"[cell r{ci.row} c{ci.col}] ", paras, cell))
+        for x in extra_at.get(i, []):  # headers/footers, notes, text boxes, inner tables
+            items.append(d.item(x.label, f"[{x.kind}] ", x.paragraphs))
     pages = [_page_info(doc, s) for s in range(len(doc.sections))]
     return items, pages
 

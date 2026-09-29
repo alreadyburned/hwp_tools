@@ -141,7 +141,7 @@ def main() -> None:
     section = c.call("hwp_read_document", path=doc_path, range="s1")
     assert "In: s1 개요" in section and "t0.r0 |" in section, section
     found = c.call("hwp_search", path=doc_path, query="사업 성과")
-    assert found.splitlines()[1].startswith("*p2 [s1 개요]"), found
+    assert found.splitlines()[1].startswith("*p2 [s1 개요, page 1]"), found
     diff = c.call("hwp_diff", path=doc_path, since="session")
     assert "(the file was created then)" in diff and "+ p0" in diff, diff
     c.call("hwp_replace_text", path=doc_path, find="핵심 지표", replace="주요 지표", target="p2")

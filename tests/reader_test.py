@@ -70,7 +70,7 @@ def check_outline_big(store: Store, path: str) -> None:
     took = time.perf_counter() - t
     print(out[:600], "\n...", f"\n[outline {took:.2f}s, {len(out)} chars]")
     assert "Headings: outline levels" in out
-    assert re.search(r"^s10  p\d+-p\d+  제10장", out, re.M), "top-level chapters listed"
+    assert re.search(r"^s10  p\d+-p\d+  page \d+-\d+  제10장", out, re.M), "top-level chapters listed"
     assert "  s7.3  " in out, "second level fits in the line budget (60 headings)"
     assert len(out.splitlines()) < reader.OUTLINE_MAX_LINES + 5
     one = reader.outline(store, path, section="s7")
@@ -124,10 +124,24 @@ def check_heuristics(work: str) -> None:
     out = reader.outline(store, path)
     print(out)
     assert "numbering" in out
-    assert re.search(r"^s1  p2-p9  Ⅰ\. 추진 배경", out, re.M), out  # p0 is the new document's blank paragraph
-    assert re.search(r"^  s1\.1  p3-p7  1\. 현황", out, re.M) and re.search(r"^    s1\.1\.2  p6-p7  나\.", out, re.M), out
+    assert re.search(r"^s1  p2-p9  page 1  Ⅰ\. 추진 배경", out, re.M), out  # p0 is the new document's blank paragraph
+    assert re.search(r"^  s1\.1  p3-p7  page 1  1\. 현황", out, re.M) and re.search(r"^    s1\.1\.2  p6-p7  page 1  나\.", out, re.M), out
     assert "세부 목표" not in out, "a sentence is not a heading"
     assert re.search(r"^s0  p0-p1", out, re.M), "the title before the first heading"
+
+    # 개조식 report: □ are headings, ○ / ㅇ lines are content; appendices and bracketed titles
+    doc = HwpxDocument.new()
+    for text in ["청년 일자리 대책", "□ 추진 배경", "○ 청년 고용률이 3년 연속 하락하여 대책이 필요함",
+                 "ㅇ 세부 통계는 붙임 참조", "□ 추진 계획", "○ 창업 공간을 확충하고 멘토링을 강화함",
+                 "참고로 예산은 추경으로 확보한다.", "붙임 1. 세부 추진 일정", "월별 일정표", "[참고 1] 해외 사례",
+                 "독일과 일본의 사례", "【 향후 과제 】", "지속적인 점검이 필요함"]:
+        add(doc, text)
+    path = save(doc, os.path.join(work, "gaejosik.hwpx"))
+    out = reader.outline(store, path)
+    print(out)
+    titles = re.findall(r"^\s*s[\d.]+  p\d+(?:-p\d+)?  page \d+  (.+?)  \(", out, re.M)
+    assert titles == ["(start of document)", "□ 추진 배경", "□ 추진 계획", "붙임 1. 세부 추진 일정",
+                      "[참고 1] 해외 사례", "【 향후 과제 】"], titles
 
     doc = HwpxDocument.new()
     add(doc, "연구 보고서", size=20, bold=True)
@@ -139,8 +153,8 @@ def check_heuristics(work: str) -> None:
     path = save(doc, os.path.join(work, "fonts.hwpx"))
     out = reader.outline(store, path)
     print(out)
-    assert "font size" in out and re.search(r"^s3  p\d+-p\d+  결과", out, re.M), out
-    assert re.search(r"^  s1\.1  p\d+-p\d+  소제목 가", out, re.M), out
+    assert "font size" in out and re.search(r"^s3  p\d+-p\d+  page 1  결과", out, re.M), out
+    assert re.search(r"^  s1\.1  p\d+-p\d+  page 1  소제목 가", out, re.M), out
 
     doc = HwpxDocument.new()
     for i in range(150):  # ~18k characters -> several fixed parts
@@ -237,6 +251,94 @@ def check_diff_big(store: Store, path: str) -> None:
     assert "1 changed, 0 added, 0 deleted, 0 format-only" in d, d
 
 
+def with_layout(p, lines: list[int]) -> None:
+    """Give a paragraph Hancom-style line layout; ``lines`` are the flags of each line (1 = page start)."""
+    from lxml import etree as ET
+    from hwp_mcp.model import HP
+    arr = ET.SubElement(p.element, HP + "linesegarray")
+    for k, flags in enumerate(lines):
+        ET.SubElement(arr, HP + "lineseg", {"textpos": str(k * 20), "vertpos": str(k * 1600), "vertsize": "1000",
+                                            "textheight": "1000", "baseline": "850", "spacing": "600",
+                                            "horzpos": "0", "horzsize": "42520", "flags": str(0x60000 | flags)})
+
+
+def check_pages(work: str) -> None:
+    store = Store()
+    # Hancom layout on every paragraph: exact pages from the page-start flags
+    doc = HwpxDocument.new()
+    first = doc.sections[-1].paragraphs[0]  # keeps the section properties (page size): reuse it
+    from hwp_mcp.model import replace_range
+    replace_range(first.element, 0, 0, "문단 0 " * 10)
+    ps = [first] + [doc.sections[-1].add_paragraph(f"문단 {i} " * 10) for i in range(1, 10)]
+    for i, p in enumerate(ps):
+        with_layout(p, {0: [1], 4: [1], 7: [0, 1]}.get(i, [0]))
+    path = save(doc, os.path.join(work, "layout.hwpx"))
+    m = reader.build_map(store.open(path))
+    print("exact spans:", m.pages.spans)
+    assert m.pages.exact and m.pages.count == 3
+    assert m.pages.spans[3] == (1, 1) and m.pages.spans[4] == (2, 2) and m.pages.spans[7] == (2, 3), m.pages.spans
+    out = reader.read_document(store, path, "page2")
+    assert "--- p4-p7, page 2-3 ---" in out and "(continues to page 3)" in out and "estimated" not in out, out
+    assert "3 page(s)" in reader.outline(store, path)
+    # an edit drops a paragraph's layout: its height is estimated, and a long estimate that runs
+    # into the next real page start is not counted twice
+    ops.set_paragraph_text(store, path, "p3", "아주 긴 문단. " * 400)
+    m = reader.build_map(store.open(path))
+    print("after edit:", m.pages.spans)
+    assert not m.pages.exact and m.pages.spans[4][0] == m.pages.spans[3][1], m.pages.spans
+    assert m.pages.spans[9][1] == m.pages.spans[4][0] + 1, "pages after the edit stay consistent"
+
+    # estimated: forced page break and a new section each start a page
+    doc = HwpDoc.new(os.path.join(work, "breaks.hwpx"), overwrite=True)
+    doc.insert_paragraph("첫 쪽\n둘째 쪽 시작")
+    doc.set_paragraph_format("p1", page_break_before=True)
+    doc.add_section()
+    doc.insert_paragraph("새 구역")
+    doc.save()
+    m = reader.build_map(store.open(doc.path))
+    assert [s[0] for s in m.pages.spans] == [1, 2, 3], m.pages.spans
+    assert "3쪽" and "p2 [" in reader.read_document(store, doc.path, "3쪽")
+    try:
+        reader.read_document(store, doc.path, "page9")
+    except ToolError as exc:
+        print("   expected error:", exc)
+    else:
+        raise AssertionError("page9 should be out of range")
+
+
+def check_extras(work: str) -> None:
+    store = Store()
+    path = os.path.join(work, "extras.hwpx")
+    doc = HwpDoc.new(path, overwrite=True)
+    doc.insert_paragraph("본문 첫 문단입니다.\n예산 집행 현황을 설명한다.")
+    doc.add_footnote("p1", "출처: 기획재정부 2026 예산 자료", after_match="예산")
+    doc.add_textbox("글상자 안의 중요 공지 문구", after="p1")
+    doc.insert_table(after="end", rows=2, cols=2, data=[["바깥 셀", "b"], ["c", "d"]])
+    doc.set_header_footer("header", text="대외비 머리말")
+    doc.table(0).cell(0, 1).paragraphs[0].add_table(2, 2).set_cell_text(1, 1, "안쪽 표의 특별 항목")
+    doc.save()
+    m = reader.build_map(store.open(path))
+    labels = [x.label for x in reader.extras(store.open(path), m)]
+    print(labels)
+    assert labels.count("header (section 0)") == 1, "python-hwpx's duplicate header copy is skipped"
+    assert {"p1 footnote 1", "p2 textbox 1", "t0.r0.c1 inner table r1.c1"} <= set(labels), labels
+    assert "Header (section 0): 대외비 머리말" in reader.read_document(store, path)
+    for query, where in (("기획재정부 자료", " p1 footnote 1 "), ("공지 문구", "p2 textbox 1 "),
+                         ("특별 항목", "t0.r0.c1 inner table r1.c1 "), ("대외비", "header (section 0) ")):
+        first = reader.search(store, path, query).splitlines()[1]
+        assert where.strip() in first, (query, first)
+    # diff sees changes outside the body text
+    copy = os.path.join(work, "extras_copy.hwpx")
+    d2 = HwpDoc.open(path)
+    note = next(p for p in d2.raw.sections[0].element.iter(f"{{{'http://www.hancom.co.kr/hwpml/2011/paragraph'}}}t")
+                if (p.text or "").startswith("출처"))
+    note.text = "출처: 통계청"
+    d2.save(copy)
+    d = reader.diff(store, copy, against=path)
+    print(d)
+    assert '~ p1 footnote 1: "출처: 기획재정부 2026 예산 자료" -> "출처: 통계청"' in d, d
+
+
 def main() -> None:
     work = sys.argv[1] if len(sys.argv) > 1 else tempfile.mkdtemp(prefix="hwpreader-")
     os.makedirs(work, exist_ok=True)
@@ -251,6 +353,8 @@ def main() -> None:
     check_diff_big(store, big)
     check_heuristics(work)
     check_edit_views_and_diff(work)
+    check_pages(work)
+    check_extras(work)
     print("\nALL READER CHECKS PASSED ->", work)
 
 
