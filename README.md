@@ -12,7 +12,7 @@ Claude Code, VS Code Copilot(에이전트 모드), Roo Code / Zoo Code, Kilo Cod
 | 검증 명령 (`python -m hwp_mcp.check`) | 파일 검증, 문단 주소·서식 목록, 근사 미리보기 PNG |
 | 스킬 (`skill/hwp-direct`) | Claude Code(및 full 구성의 Roo/Zoo Code) 스킬: 언제 MCP/스크립트를 쓰는지, 반드시 지킬 규칙, 검증된 레시피, OWPML XML 참조 |
 | 사용 규칙 (`rules/`) | Roo/Zoo·Kilo·Continue에 설치하는 짧은 사용 규칙(도구 구성별 `hwp-basic.md`, `hwp-full.md`) |
-| VS Code 확장 (`extension.js`, `clients.js`) | `~/.hwp-mcp/venv` Python 환경 자동 구성, 선택한 AI 에이전트에 MCP 서버·규칙·스킬 등록, `.hwpx/.hwp` 근사 미리보기 |
+| VS Code 확장 (`extension.js`, `clients.js`, `media/`) | `~/.hwp-mcp/venv` Python 환경 자동 구성, 선택한 AI 에이전트에 MCP 서버·규칙·스킬 등록, `.hwpx/.hwp` 뷰어(근사 미리보기 + 붙여넣기·여백 편집) |
 
 ## 설치
 
@@ -105,6 +105,24 @@ Roo/Zoo·Kilo·Continue는 로컬 소형 모델로 쓰는 경우가 많아 기�
 - 벡터는 `~/.hwp-mcp/cache/vectors.sqlite`에 문단 텍스트 해시로 저장합니다. 편집 뒤에는 바뀐 문단만 다시 계산합니다. `hwp_outline`·`hwp_read_document`를 부르면 백그라운드에서 미리 색인하고, 검색 때 색인이 덜 끝났으면 가능한 만큼만 쓰고 그 사실을 결과에 적습니다.
 - 준비가 안 됐거나 실패하면(모델 없음, Ollama 꺼짐 등) 키워드 결과를 그대로 돌려주고 이유를 `Note:`로 알려 줍니다.
 
+## 뷰어에서 편집하기
+
+`.hwpx`/`.hwp` 파일을 열면 나오는 **HWP 뷰어**(근사 미리보기)에서 사람이 직접 몇 가지를 고칠 수 있습니다. 편집은 MCP 도구와 같은 검증을 거쳐 파일에 바로 저장되고, 실패하면 파일은 그대로입니다.
+
+| 조작 | 동작 |
+|---|---|
+| 문단 클릭 / Shift+클릭 | 문단 선택 / 범위 선택 (표는 그 표가 들어 있는 문단 단위) |
+| **Ctrl+C** | 선택한 문단 복사. 시스템 클립보드에는 텍스트(표는 탭으로 구분한 행)가 들어갑니다 |
+| **Ctrl+V** | 선택한 문단 뒤에(선택이 없으면 문서 끝에) 붙여넣기 |
+| **Ctrl+Z** | 이 뷰어에서 한 편집을 차례로 되돌리기(최대 20단계, VS Code를 닫으면 사라짐) |
+| **여백** 버튼 | 위·아래·왼쪽·오른쪽·머리말·꼬리말 여백(mm)을 모든 구역 또는 한 구역에 적용 |
+| Esc | 선택 해제 / 여백 창 닫기 |
+
+- **다른 한글 문서에서 붙여넣기**: 한 뷰어에서 Ctrl+C로 복사하고 다른 문서의 뷰어에서 Ctrl+V를 누르면 문단의 **서식을 그대로 가져옵니다**. 스타일, 글자·문단 모양, 글꼴, 표(병합·테두리·배경), 그림이 따라오고, 대상 문서의 기존 스타일과 번호가 겹치지 않게 새로 등록됩니다(python-hwpx의 문서 끼워 넣기 사용). `.hwp`↔`.hwpx` 사이도 됩니다.
+- **다른 프로그램에서 붙여넣기**: 복사한 뒤 클립보드 내용이 바뀌었으면(웹 페이지, 워드 등에서 복사) 텍스트로 붙이고, 줄마다 한 문단이 되며 선택한 문단의 모양을 따릅니다.
+- 여백은 본문 폭·높이가 20mm 미만이 되거나 0~150mm를 벗어나면 적용하지 않습니다.
+- 화면의 문단과 문서 문단의 대응을 확인하지 못한 문서는 읽기 전용으로 표시됩니다.
+
 ## 직접 실행 방식 (스킬 `hwp-direct`)
 
 MCP 도구에 없는 기능이나 한 번에 많은 편집은 AI가 Python 스크립트로 처리합니다.
@@ -135,6 +153,7 @@ doc.save()   # 검증 후 저장, 실패하면 파일은 그대로
 ## 제한 사항
 
 - 미리보기는 **근사치**입니다(표 테두리, 그림, 자동 번호가 생략될 수 있음). 정확한 모양은 "한컴오피스에서 열기"로 확인하세요.
+- 뷰어의 복사·붙여넣기는 문단 단위입니다(문단 일부만 골라 서식 유지로 붙이는 기능은 없음). 문단 일부를 마우스로 끌어 선택한 뒤 복사하면 텍스트로만 복사됩니다.
 - `.hwp`는 내부적으로 HWPX 모델로 변환해 편집 후 HWP 5.0으로 다시 씁니다. 변환기가 옮기지 못하는 요소가 있는 파일은 제자리 편집을 거부하고 `hwp_save_as`로 사본(.hwpx 권장)을 만들도록 안내합니다. 암호/배포용 문서는 열 수 없습니다.
 - 중첩 표(셀 안의 표)는 행/열 구조 편집을 지원하지 않습니다.
 - 이미지가 많은 대용량 문서(수 MB)는 편집 1회당 수 초가 걸립니다(매번 전체 검증 후 저장).
@@ -152,7 +171,10 @@ doc.save()   # 검증 후 저장, 실패하면 파일은 그대로
 <venv python> tests/skill_recipes_test.py    # 스킬 문서의 코드 블록을 그대로 실행
 <venv python> tests/reader_test.py           # 개요·범위 읽기·검색·diff (생성한 100쪽 규모 문서 포함)
 node tests/clients_test.js                   # 에이전트별 설정 파일 작성(병합·보존·주석 있는 JSONC)
+<venv python> tests/viewer_test.py           # 뷰어: 문단 주소, 서식 유지 붙여넣기(.hwp 포함), 텍스트 붙여넣기, 여백
+<venv python> tests/viewer_dom_test.py       # 뷰어 웹뷰 스크립트를 헤드리스 Chrome/Edge에서 실행(선택·단축키·여백 창)
 node tests/extension_smoke_test.js           # vscode 스텁으로 확장 활성화·등록 명령·Copilot 선택 등록
+                                             #   HWP_TEST_VENV=<의존성 있는 venv>이면 뷰어 복사→붙여넣기·여백·되돌리기도
                                              #   HWP_TEST_VENV=<numpy가 있는 venv>이면 가짜 Ollama로 의미 검색 준비까지
 <numpy가 있는 python> tests/embed_test.py [--real]   # 의미 검색: 융합·캐시·백그라운드 색인·Ollama(가짜 서버), --real이면 내장 모델 실제 다운로드
 # node가 없으면 VS Code의 Electron으로: ELECTRON_RUN_AS_NODE=1 "<VS Code>/Code.exe" tests/clients_test.js | cat

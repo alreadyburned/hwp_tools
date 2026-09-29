@@ -372,7 +372,7 @@ function reportEmbeddingError(err) {
 }
 
 // ---------------------------------------------------------------------------
-// preview
+// viewer: preview + editing (paste from another document, margins, undo)
 // ---------------------------------------------------------------------------
 function escapeHtml(s) {
   return String(s).replace(/[&<>"]/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[c]));
@@ -381,7 +381,6 @@ function escapeHtml(s) {
 const TOOLBAR = `
 <div id="hwpmcp-bar" style="position:fixed;right:12px;bottom:12px;z-index:9999;display:flex;gap:6px;align-items:center;
   font:12px system-ui,sans-serif;background:rgba(30,30,30,.85);color:#fff;padding:6px 10px;border-radius:6px">
-  <span title="레이아웃·테두리·그림·자동 번호는 한컴오피스와 다를 수 있습니다">근사 미리보기</span>
   <button onclick="hwpmcp('refresh')">새로고침</button>
   <button onclick="hwpmcp('openExternal')">한컴오피스에서 열기</button>
 </div>
@@ -390,6 +389,50 @@ const TOOLBAR = `
 function messageHtml(title, body) {
   return `<!doctype html><html><body style="font:14px system-ui,sans-serif;padding:24px">
     <h3>${escapeHtml(title)}</h3><pre style="white-space:pre-wrap">${escapeHtml(body)}</pre>${TOOLBAR}</body></html>`;
+}
+
+/** What was last copied in any viewer: pasting it into another viewer keeps its formatting. */
+let hwpClipboard = null; // { path, addresses, text }
+const UNDO_DEPTH = 20;
+const undoStacks = new Map(); // file path -> [Buffer] of the file before each viewer edit
+
+function sameText(a, b) {
+  const norm = (s) => String(s || '').replace(/\r\n?/g, '\n').replace(/\u00a0/g, ' ').trim();
+  return norm(a) === norm(b);
+}
+
+/** Run `python -m hwp_mcp.viewer apply` with one edit; resolves to its JSON result. */
+function runViewerOp(python, op) {
+  return new Promise((resolve) => {
+    const child = cp.spawn(python, ['-m', 'hwp_mcp.viewer', 'apply'], { windowsHide: true, env: { ...process.env, ...SERVER_ENV } });
+    const out = [];
+    const err = [];
+    child.stdout.on('data', (d) => out.push(d));
+    child.stderr.on('data', (d) => err.push(d));
+    child.on('error', (e) => resolve({ ok: false, message: String(e) }));
+    child.on('close', () => {
+      const text = Buffer.concat(out).toString('utf8').trim().split(/\r?\n/).pop() || '';
+      try {
+        resolve(JSON.parse(text));
+      } catch (_) {
+        const stderr = Buffer.concat(err).toString('utf8');
+        log.appendLine(stderr);
+        resolve({ ok: false, message: `편집 실패: ${stderr.slice(-500) || text}` });
+      }
+    });
+    child.stdin.end(JSON.stringify(op));
+  });
+}
+
+function writeFileAtomic(file, data) {
+  const tmp = path.join(path.dirname(file), `.~hwpview-${process.pid}-${Date.now()}.tmp`);
+  fs.writeFileSync(tmp, data);
+  try {
+    fs.renameSync(tmp, file);
+  } catch (err) {
+    fs.rmSync(tmp, { force: true });
+    throw new Error(err.code === 'EPERM' || err.code === 'EBUSY' ? '파일이 다른 프로그램에서 열려 있어 쓸 수 없습니다.' : err.message);
+  }
 }
 
 class PreviewProvider {
@@ -403,30 +446,98 @@ class PreviewProvider {
 
   async resolveCustomEditor(document, panel) {
     const uri = document.uri;
+    const file = uri.fsPath;
+    const media = path.join(this.context.extensionPath, 'media');
     panel.webview.options = { enableScripts: true };
     let timer;
-    const render = async () => {
+    let quietUntil = 0; // our own save also fires the file watcher: skip that render
+    let busy = false;
+
+    const render = async (initial = {}) => {
       try {
         const py = await ensureEnvironment(this.context);
-        const r = await run(py, ['-m', 'hwp_mcp.preview', uri.fsPath]);
+        const r = await run(py, ['-m', 'hwp_mcp.viewer', 'render', file]);
         if (r.code !== 0) throw new Error(r.stderr.slice(-2000) || `exit ${r.code}`);
-        const html = r.stdout.includes('</body>') ? r.stdout.replace('</body>', `${TOOLBAR}</body>`) : r.stdout + TOOLBAR;
-        panel.webview.html = html;
+        const ui =
+          `<style>${fs.readFileSync(path.join(media, 'viewer.css'), 'utf8')}</style>` +
+          `<script>window.__hwpInitial = ${JSON.stringify(initial).replace(/</g, '\\u003c')};</script>` +
+          `<script>${fs.readFileSync(path.join(media, 'viewer.js'), 'utf8')}</script>`;
+        panel.webview.html = r.stdout.includes('</body>') ? r.stdout.replace('</body>', () => `${ui}</body>`) : r.stdout + ui;
       } catch (err) {
         panel.webview.html = messageHtml('미리보기를 만들 수 없습니다', String(err.message || err));
       }
     };
-    panel.webview.html = messageHtml('불러오는 중…', uri.fsPath);
+    const status = (text, error = false) => panel.webview.postMessage({ type: 'status', text, error });
+
+    /** Apply one edit, keeping the previous bytes for undo, then redraw with the result selected. */
+    const edit = async (op) => {
+      if (busy) return status('이전 작업이 끝나기를 기다리는 중입니다.', true);
+      busy = true;
+      try {
+        const python = await ensureEnvironment(this.context);
+        const before = fs.readFileSync(file);
+        const result = await runViewerOp(python, { ...op, path: file });
+        if (!result.ok) return status(result.message, true);
+        const stack = undoStacks.get(file) || [];
+        stack.push(before);
+        undoStacks.set(file, stack.slice(-UNDO_DEPTH));
+        quietUntil = Date.now() + 2000;
+        await render({ select: result.inserted, message: result.message });
+      } catch (err) {
+        status(String(err.message || err), true);
+      } finally {
+        busy = false;
+      }
+    };
+
+    const handlers = {
+      refresh: () => render(),
+      openExternal: () => vscode.env.openExternal(uri),
+      copy: async (msg) => {
+        hwpClipboard = { path: file, addresses: msg.addresses, text: msg.text };
+        await vscode.env.clipboard.writeText(msg.text);
+        status(`복사했습니다: 문단 ${msg.addresses.length}개 — 다른 한글 문서 뷰어에서 Ctrl+V`);
+      },
+      copyText: async (msg) => {
+        hwpClipboard = null;
+        await vscode.env.clipboard.writeText(msg.text);
+        status('텍스트를 복사했습니다.');
+      },
+      paste: async (msg) => {
+        const text = await vscode.env.clipboard.readText();
+        const rich = hwpClipboard && sameText(text, hwpClipboard.text) && fs.existsSync(hwpClipboard.path);
+        if (rich) {
+          return edit({ op: 'paste_paragraphs', after: msg.after, source: hwpClipboard.path, addresses: hwpClipboard.addresses });
+        }
+        if (!text.trim()) return status('클립보드에 붙여넣을 텍스트가 없습니다.', true);
+        return edit({ op: 'paste_text', after: msg.after, text });
+      },
+      margins: (msg) => edit({ op: 'margins', section: msg.section, margins: msg.margins }),
+      undo: async () => {
+        const stack = undoStacks.get(file) || [];
+        if (!stack.length) return status('이 뷰어에서 되돌릴 편집이 없습니다.', true);
+        try {
+          writeFileAtomic(file, stack[stack.length - 1]);
+          stack.pop();
+          quietUntil = Date.now() + 2000;
+          await render({ message: `되돌렸습니다 (남은 단계 ${stack.length})` });
+        } catch (err) {
+          status(String(err.message || err), true);
+        }
+      },
+    };
+    panel.webview.html = messageHtml('불러오는 중…', file);
     panel.webview.onDidReceiveMessage((msg) => {
-      if (msg.type === 'refresh') render();
-      if (msg.type === 'openExternal') vscode.env.openExternal(uri);
+      const handler = handlers[msg && msg.type];
+      if (handler) Promise.resolve(handler(msg)).catch((err) => status(String(err.message || err), true));
     });
     const watcher = vscode.workspace.createFileSystemWatcher(
-      new vscode.RelativePattern(vscode.Uri.file(path.dirname(uri.fsPath)), path.basename(uri.fsPath))
+      new vscode.RelativePattern(vscode.Uri.file(path.dirname(file)), path.basename(file))
     );
     const onChange = () => {
+      if (Date.now() < quietUntil) return;
       clearTimeout(timer);
-      timer = setTimeout(render, 400);
+      timer = setTimeout(() => render(), 400);
     };
     watcher.onDidChange(onChange);
     watcher.onDidCreate(onChange);

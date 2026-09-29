@@ -29,6 +29,7 @@ const commands = {};
 const messages = [];
 const answers = { quickPick: null, info: undefined };
 let provider = null;
+let viewerProvider = null;
 
 class EventEmitter {
   constructor() { this.listeners = []; this.event = (fn) => this.listeners.push(fn); }
@@ -43,7 +44,12 @@ const vscode = {
   McpStdioServerDefinition: class { constructor(label, command, args, env, version) { Object.assign(this, { label, command, args, env, version }); } },
   lm: { registerMcpServerDefinitionProvider: (id, p) => { provider = p; return disposable; } },
   commands: { registerCommand: (id, fn) => { commands[id] = fn; return disposable; } },
-  env: { clipboard: { writeText: async () => {} }, openExternal: () => {} },
+  env: {
+    clipboard: { text: '', writeText: async (t) => { vscode.env.clipboard.text = t; }, readText: async () => vscode.env.clipboard.text },
+    openExternal: () => {},
+  },
+  Uri: { file: (p) => ({ fsPath: p }) },
+  RelativePattern: class { constructor(base, pattern) { Object.assign(this, { base, pattern }); } },
   workspace: {
     workspaceFolders: [{ uri: { fsPath: workspace } }],
     getConfiguration: () => ({
@@ -68,7 +74,7 @@ const vscode = {
     showWorkspaceFolderPick: async () => vscode.workspace.workspaceFolders[0],
     showTextDocument: async () => {},
     withProgress: async (_opts, fn) => fn({ report() {} }),
-    registerCustomEditorProvider: () => disposable,
+    registerCustomEditorProvider: (id, p) => { viewerProvider = p; return disposable; },
   },
 };
 const originalLoad = Module._load;
@@ -79,15 +85,95 @@ Module._load = function (request, ...rest) {
 // ---- semantic search setup ------------------------------------------------------
 // Needs a real Python with numpy: HWP_TEST_VENV=<venv dir>. Its interpreter stands in for the
 // extension's venv, and a fake Ollama server answers the model pull.
+// A real Python (with hwp_mcp's dependencies; PYTHONPATH adds the source tree) stands in for the
+// extension's venv, so the viewer and embedding checks run the real server code.
+function useRealPython(testVenv) {
+  fs.copyFileSync(path.join(testVenv, 'Scripts', 'python.exe'), venvPy);
+  fs.copyFileSync(path.join(testVenv, 'pyvenv.cfg'), path.join(home, '.hwp-mcp', 'venv', 'pyvenv.cfg'));
+  process.env.PYTHONPATH = [path.join(root, 'server'), path.join(testVenv, 'Lib', 'site-packages')].join(path.delimiter);
+}
+
+// ---- viewer: copy in one document, paste into another, margins, undo ----------------------
+function viewerPanel() {
+  const panel = { html: '', posted: [], listener: null };
+  panel.webview = {
+    options: {},
+    set html(v) { panel.html = v; },
+    get html() { return panel.html; },
+    postMessage: async (m) => { panel.posted.push(m); },
+    onDidReceiveMessage: (fn) => { panel.listener = fn; },
+  };
+  panel.onDidDispose = () => {};
+  return panel;
+}
+
+/** Send a webview message and wait until the viewer redraws or reports a status. */
+async function send(panel, msg) {
+  const html = panel.html;
+  const posted = panel.posted.length;
+  panel.listener(msg);
+  for (let i = 0; i < 1200 && panel.html === html && panel.posted.length === posted; i++) {
+    await new Promise((r) => setTimeout(r, 50));
+  }
+}
+const initialOf = (html) => JSON.parse(/window\.__hwpInitial = (.*?);<\/script>/.exec(html)[1]);
+const infoOf = (html) => JSON.parse(/id="hwp-doc-info">(.*?)<\/script>/.exec(html)[1]);
+
+async function checkViewer() {
+  if (!process.env.HWP_TEST_VENV) {
+    console.log('(viewer editing skipped: set HWP_TEST_VENV to a venv with the server dependencies)');
+    return;
+  }
+  const a = path.join(workspace, 'a.hwpx');
+  const b = path.join(workspace, 'b.hwpx');
+  fs.copyFileSync(path.join(root, 'samples', '샘플_사업보고서.hwpx'), a);
+  fs.copyFileSync(path.join(root, 'samples', '샘플_사업보고서.hwpx'), b);
+  const pa = viewerPanel();
+  const pb = viewerPanel();
+  await viewerProvider.resolveCustomEditor({ uri: { fsPath: a } }, pa);
+  await viewerProvider.resolveCustomEditor({ uri: { fsPath: b } }, pb);
+  assert.ok(pa.html.includes('data-addr="p15"') && pa.html.includes("document.getElementById('hwp-doc-info')"), 'viewer UI injected');
+  assert.strictEqual(infoOf(pa.html).editable, true);
+
+  // copy heading + note + table in A, paste them after p0 of B: formatting kept
+  const copied = ['분기별 실적', '(단위: 억 원)', '표'].join('\n');
+  await send(pa, { type: 'copy', addresses: ['p5', 'p6', 'p7'], text: copied });
+  assert.strictEqual(vscode.env.clipboard.text, copied);
+  await send(pb, { type: 'paste', after: 'p0' });
+  let init = initialOf(pb.html);
+  assert.deepStrictEqual(init.select, ['p1', 'p2', 'p3'], JSON.stringify(init));
+  assert.ok(init.message.includes('서식 유지'), init.message);
+  assert.strictEqual(infoOf(pb.html).paragraphs, 19);
+
+  // text copied elsewhere: pasted as plain paragraphs
+  vscode.env.clipboard.text = ['다른 프로그램에서 복사한 글', '두 번째 줄'].join('\n');
+  await send(pb, { type: 'paste', after: null });
+  init = initialOf(pb.html);
+  assert.deepStrictEqual(init.select, ['p19', 'p20'], JSON.stringify(init));
+  assert.ok(init.message.includes('텍스트'), init.message);
+
+  // margins, then undo them
+  await send(pb, { type: 'margins', section: null, margins: { left: 18, right: 18 } });
+  assert.strictEqual(infoOf(pb.html).sections[0].margins.left, 18);
+  await send(pb, { type: 'margins', section: 0, margins: { left: 200 } });
+  assert.ok(pb.posted[pb.posted.length - 1].error, 'invalid margins are reported, not applied');
+  await send(pb, { type: 'undo' });
+  assert.strictEqual(infoOf(pb.html).sections[0].margins.left, 25);
+  await send(pb, { type: 'undo' });
+  await send(pb, { type: 'undo' });
+  assert.strictEqual(infoOf(pb.html).paragraphs, 16, 'all three edits undone');
+  assert.deepStrictEqual(fs.readFileSync(b), fs.readFileSync(a), 'back to the original bytes');
+  await send(pb, { type: 'undo' });
+  assert.ok(pb.posted[pb.posted.length - 1].text.includes('되돌릴 편집이 없습니다'));
+  console.log('viewer: copy → paste with formatting, text paste, margins, undo OK');
+}
+
 async function checkEmbedding() {
   const testVenv = process.env.HWP_TEST_VENV;
   if (!testVenv) {
     console.log('(semantic search setup skipped: set HWP_TEST_VENV to a venv with numpy)');
     return;
   }
-  fs.copyFileSync(path.join(testVenv, 'Scripts', 'python.exe'), venvPy);
-  fs.copyFileSync(path.join(testVenv, 'pyvenv.cfg'), path.join(home, '.hwp-mcp', 'venv', 'pyvenv.cfg'));
-  process.env.PYTHONPATH = [path.join(root, 'server'), path.join(testVenv, 'Lib', 'site-packages')].join(path.delimiter);
   const http = require('http');
   let pulled = false;
   const server = http.createServer((req, res) => {
@@ -121,6 +207,7 @@ async function checkEmbedding() {
 
 // ---- run -----------------------------------------------------------------------
 (async () => {
+  if (process.env.HWP_TEST_VENV) useRealPython(process.env.HWP_TEST_VENV);
   const ext = require('../extension');
   const context = { extensionPath: root, extension: { packageJSON: pkg }, subscriptions: [] };
   ext.activate(context);
@@ -163,6 +250,7 @@ async function checkEmbedding() {
   assert.ok(!messages.some((m) => m.startsWith('ERROR')), messages.join('\n'));
   console.log(messages[messages.length - 1]);
 
+  await checkViewer();
   await checkEmbedding();
   console.log(`\nEXTENSION SMOKE TEST PASSED -> ${workspace}`);
 })().catch((err) => {

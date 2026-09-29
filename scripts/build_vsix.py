@@ -12,10 +12,10 @@ from xml.sax.saxutils import escape
 
 ROOT = Path(__file__).resolve().parent.parent
 FILES = ["package.json", "extension.js", "clients.js", "README.md", "LICENSE.txt"]
-SERVER_GLOBS = ["server/pyproject.toml", "server/hwp_mcp/*.py", "skill/hwp-direct/*.md", "rules/*.md"]
+SERVER_GLOBS = ["server/pyproject.toml", "server/hwp_mcp/*.py", "skill/hwp-direct/*.md", "rules/*.md", "media/*"]
 
 CONTENT_TYPES = """<?xml version="1.0" encoding="utf-8"?>
-<Types xmlns="http://schemas.openxmlformats.org/package/2006/content-types"><Default Extension=".js" ContentType="application/javascript"/><Default Extension=".json" ContentType="application/json"/><Default Extension=".md" ContentType="text/markdown"/><Default Extension=".txt" ContentType="text/plain"/><Default Extension=".py" ContentType="text/plain"/><Default Extension=".toml" ContentType="text/plain"/><Default Extension=".vsixmanifest" ContentType="text/xml"/></Types>"""
+<Types xmlns="http://schemas.openxmlformats.org/package/2006/content-types"><Default Extension=".js" ContentType="application/javascript"/><Default Extension=".css" ContentType="text/css"/><Default Extension=".json" ContentType="application/json"/><Default Extension=".md" ContentType="text/markdown"/><Default Extension=".txt" ContentType="text/plain"/><Default Extension=".py" ContentType="text/plain"/><Default Extension=".toml" ContentType="text/plain"/><Default Extension=".vsixmanifest" ContentType="text/xml"/></Types>"""
 
 
 def manifest(pkg: dict) -> str:

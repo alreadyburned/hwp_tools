@@ -1,8 +1,8 @@
 {
   "name": "hwp-tools",
   "displayName": "hwp_tools — 한글 문서 편집 (AI)",
-  "description": "Lets AI agents (Claude Code, Copilot, Roo/Zoo Code, Kilo Code, Continue) read, navigate and edit Hangul .hwpx/.hwp documents through an MCP server (outline, search, diff, formatting, styles, tables, images, page setup), with a small tool profile for local models and a Python scripting skill for advanced features. Includes an approximate preview.",
-  "version": "0.5.0",
+  "description": "Lets AI agents (Claude Code, Copilot, Roo/Zoo Code, Kilo Code, Continue) read, navigate and edit Hangul .hwpx/.hwp documents through an MCP server (outline, search, diff, formatting, styles, tables, images, page setup), with a small tool profile for local models and a Python scripting skill for advanced features. Includes a viewer (approximate preview) that can paste paragraphs from another document with their formatting and adjust page margins.",
+  "version": "0.6.0",
   "publisher": "local",
   "license": "MIT",
   "engines": {
@@ -33,7 +33,7 @@
     "customEditors": [
       {
         "viewType": "hwpMcp.preview",
-        "displayName": "HWP 미리보기 (근사)",
+        "displayName": "HWP 뷰어 (미리보기, 붙여넣기, 여백)",
         "selector": [
           { "filenamePattern": "*.hwpx" },
           { "filenamePattern": "*.hwp" }

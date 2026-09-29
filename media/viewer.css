@@ -1,0 +1,31 @@
+/* hwp_tools viewer: selection, toolbar and margin panel over the python-hwpx preview. */
+body.hwp-editable [data-addr] { cursor: pointer; }
+body.hwp-editable [data-addr]:hover { outline: 1px dashed rgba(59, 130, 246, 0.5); }
+.hwp-sel { outline: 2px solid #3b82f6 !important; background: rgba(59, 130, 246, 0.10) !important; }
+
+#hwp-bar {
+  position: fixed; right: 12px; bottom: 12px; z-index: 9999; display: flex; gap: 6px; align-items: center;
+  font: 12px system-ui, sans-serif; background: rgba(30, 30, 30, 0.88); color: #fff; padding: 6px 10px; border-radius: 6px;
+  max-width: calc(100vw - 24px); flex-wrap: wrap;
+}
+#hwp-bar button { font: inherit; padding: 2px 8px; border-radius: 4px; border: 1px solid #666; background: #2d2d2d; color: #fff; cursor: pointer; }
+#hwp-bar button:hover { background: #3d3d3d; }
+#hwp-bar button:disabled { opacity: 0.4; cursor: default; }
+#hwp-status { min-width: 120px; opacity: 0.9; }
+#hwp-status.error { color: #ff8a80; }
+#hwp-status.busy::after { content: " …"; }
+
+#hwp-margins {
+  position: fixed; right: 12px; bottom: 56px; z-index: 9999; display: none; font: 13px system-ui, sans-serif;
+  background: #1e1e1e; color: #eee; border: 1px solid #555; border-radius: 8px; padding: 12px 14px; box-shadow: 0 6px 24px rgba(0,0,0,.4);
+}
+#hwp-margins.open { display: block; }
+#hwp-margins h4 { margin: 0 0 8px; font-size: 13px; }
+#hwp-margins .grid { display: grid; grid-template-columns: auto 72px auto 72px; gap: 6px 8px; align-items: center; }
+#hwp-margins input, #hwp-margins select { width: 100%; box-sizing: border-box; font: inherit; background: #2d2d2d; color: #fff; border: 1px solid #666; border-radius: 4px; padding: 2px 4px; }
+#hwp-margins .row { display: flex; gap: 8px; align-items: center; margin-top: 10px; }
+#hwp-margins .row select { width: auto; flex: 1; }
+#hwp-margins .actions { display: flex; gap: 6px; justify-content: flex-end; margin-top: 10px; }
+#hwp-margins button { font: inherit; padding: 3px 10px; border-radius: 4px; border: 1px solid #666; background: #2d2d2d; color: #fff; cursor: pointer; }
+#hwp-margins button.primary { background: #2563eb; border-color: #2563eb; }
+#hwp-margins .note { font-size: 11px; opacity: 0.7; margin-top: 6px; }
