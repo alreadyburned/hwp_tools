@@ -66,6 +66,7 @@ class Store:
     def __init__(self) -> None:
         self._docs: dict[str, tuple[tuple[int, int], HwpxDocument]] = {}
         self._undo: dict[str, list[bytes | None]] = {}
+        self._baseline: dict[str, bytes | None] = {}  # file bytes before the first edit this session
         self._lock = threading.RLock()
 
     # -- reading -----------------------------------------------------------
@@ -130,6 +131,7 @@ class Store:
                 raise ToolError(f"Edit rejected (nothing was written): {exc}") from exc
             previous = Path(path).read_bytes() if os.path.exists(path) else None
             _write_atomically(path, data)
+            self._baseline.setdefault(path, previous)
             stack = self._undo.setdefault(path, [])
             stack.append(previous)
             del stack[:-UNDO_DEPTH]
@@ -172,6 +174,24 @@ class Store:
                 return "Undone: the file had been created by the last edit, so it was deleted."
             _write_atomically(path, previous)
             return f"Undone. {len(stack)} more undo step(s) available for this file."
+
+    def earlier_version(self, path: str, since: str) -> bytes | None:
+        """File bytes before the last edit ("last") or before the first edit of this session
+        ("session"). None means the file did not exist then."""
+        with self._lock:
+            if path not in self._baseline:
+                raise ToolError(
+                    "No edits to this file through these tools in the current session, so there is "
+                    "nothing to compare. (Pass against=<path of another copy> to compare two files.)"
+                )
+            if since == "session":
+                return self._baseline[path]
+            if since != "last":
+                raise ToolError('since must be "last" or "session".')
+            stack = self._undo.get(path)
+            if not stack:
+                raise ToolError('Every edit of this session was undone; use since="session".')
+            return stack[-1]
 
     def forget(self, path: str) -> None:
         with self._lock:

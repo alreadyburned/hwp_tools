@@ -75,6 +75,8 @@ def main() -> None:
     work = sys.argv[1] if len(sys.argv) > 1 else tempfile.mkdtemp(prefix="hwpmcp-")
     os.makedirs(work, exist_ok=True)
     doc_path = os.path.join(work, "report.hwpx")
+    if os.path.exists(doc_path):  # hwp_diff(since="session") below expects a newly created file
+        os.remove(doc_path)
     img = os.path.join(work, "logo.png")
     with open(img, "wb") as fh:
         fh.write(png(120, 60, (30, 90, 200)))
@@ -133,6 +135,20 @@ def main() -> None:
     print(c.call("hwp_get_table", path=doc_path, table=0, include_format=True)[:1500])
     c.call("hwp_find_text", path=doc_path, text="이익")
     c.call("hwp_list_styles", path=doc_path)
+    # navigation and verification
+    outline = c.call("hwp_outline", path=doc_path)
+    assert "s1  p1-" in outline and "개요" in outline, outline
+    section = c.call("hwp_read_document", path=doc_path, range="s1")
+    assert "In: s1 개요" in section and "t0.r0 |" in section, section
+    found = c.call("hwp_search", path=doc_path, query="사업 성과")
+    assert found.splitlines()[1].startswith("*p2 [s1 개요]"), found
+    diff = c.call("hwp_diff", path=doc_path, since="session")
+    assert "(the file was created then)" in diff and "+ p0" in diff, diff
+    c.call("hwp_replace_text", path=doc_path, find="핵심 지표", replace="주요 지표", target="p2")
+    diff = c.call("hwp_diff", path=doc_path)
+    assert '~ p2: "' in diff and "주요 지표" in diff and "1 changed, 0 added, 0 deleted, 0 format" in diff, diff
+    c.call("hwp_undo", path=doc_path)
+    c.call("hwp_read_document", path=doc_path, range="p99", expect_error=True)
 
     d = check_file(doc_path)
     texts = [p.text for p in d.paragraphs]

@@ -15,7 +15,7 @@ import time
 import traceback
 import zlib
 
-from hwp_mcp import ops
+from hwp_mcp import ops, reader
 from hwp_mcp.model import body_paragraphs, paragraph_text, top_tables
 from hwp_mcp.store import Store, ToolError
 
@@ -49,7 +49,9 @@ def run_file(src: str, work: str, img: str) -> tuple[list[str], list[str]]:
         except Exception:  # noqa: BLE001
             bad.append(f"{label}: CRASH {traceback.format_exc(limit=3)}")
 
-    step("read", ops.read_document, path, 0, 300, 200, True)
+    step("read", reader.read_document, path, None, 200, True)
+    step("outline", reader.outline, path)
+    step("search", reader.search, path, "사업 계획")
     try:
         doc = store.open(path)
     except ToolError as exc:
@@ -92,7 +94,8 @@ def run_file(src: str, work: str, img: str) -> tuple[list[str], list[str]]:
     step("image", ops.insert_image, path, img, "p1", 30, None, "center")
     step("page_setup", ops.page_setup, path, 0, {"margin_left_mm": 20, "margin_right_mm": 20})
     step("footer", ops.header_footer, path, "footer", None, "dash", "center", 0, False)
-    step("read_end", ops.read_document, path, 0, 50, 80, False)
+    step("read_end", reader.read_document, path, "p0-p49", 80, False)
+    step("diff", reader.diff, path, "session")
     return ok, bad
 
 

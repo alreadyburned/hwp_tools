@@ -38,7 +38,7 @@ import hwpx
 from hwpx import HwpxDocument
 from hwpx.oxml import HwpxOxmlParagraph, HwpxOxmlShape, HwpxOxmlTable, HwpxOxmlTableCell
 
-from . import formats, ops
+from . import formats, ops, reader
 from .model import (
     HC, HH, HP, PIC_TAG, RUN_TAG, T_TAG, all_pictures, clear_layout_cache, get_table, hu_to_mm, mm_to_hu,
     body_paragraphs, normalize_color, paragraph_text, resolve_cells, resolve_one_paragraph, resolve_paragraphs,
@@ -164,8 +164,30 @@ class HwpDoc:
         return out
 
     # ------------------------------------------------------------------ layer 1: MCP operations
-    def read(self, start: int = 0, limit: int = 300, max_chars: int = 400, show_format: bool = False) -> str:
-        return ops.read_document(self._store, self.path, start, limit, max_chars, show_format)
+    def read(self, range: str | None = None, max_chars: int = 600, show_format: bool = False, *,
+             start: int | None = None, limit: int | None = None) -> str:
+        """range: section id ("s2.1"), "p10-p40", "p10-", "t3"...; start/limit are the older form."""
+        if start is not None or limit is not None:
+            first = start or 0
+            range = f"p{first}-p{first + (limit or 300) - 1}"
+        return reader.read_document(self._store, self.path, range, max_chars, show_format)
+
+    def outline(self, section: str | None = None, depth: int | None = None) -> str:
+        return reader.outline(self._store, self.path, section, depth)
+
+    def search(self, query: str, max_results: int = 10) -> str:
+        return reader.search(self._store, self.path, query, max_results)
+
+    def diff(self, against: str | None = None) -> str:
+        """What this script changed so far: the document in memory vs the file on disk
+        (or vs ``against``). Call before save() to check the edits."""
+        other = normalize_path(against) if against else self.path
+        if not os.path.exists(other):
+            return "Changes (new document):\n" + reader.diff_documents(None, self.raw)
+        with warnings.catch_warnings():
+            warnings.simplefilter("ignore")
+            old = HwpxDocument.open(other)
+        return f"Changes vs {os.path.basename(other)}:\n" + reader.diff_documents(old, self.raw)
 
     def get_paragraph(self, target: str) -> dict:
         return ops.get_paragraph(self._store, self.path, target)

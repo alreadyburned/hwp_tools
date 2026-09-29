@@ -20,7 +20,7 @@ from .model import (
     HP, P_TAG, PIC_TAG, RUN_TAG, T_TAG, TBL_TAG, ParaTarget, all_pictures, body_paragraphs, cell_grid, clear_layout_cache,
     first_char_pr, get_table, hu_to_mm, iter_text_paragraphs, merge_adjacent_runs, mm_to_hu, paragraph_text,
     replace_range,
-    resolve_cells, resolve_one_paragraph, resolve_paragraphs, run_elements, runs_in_range, t_text,
+    resolve_cells, resolve_one_paragraph, resolve_paragraphs, run_elements, run_text, runs_in_range, t_text,
     table_cells, top_tables,
 )
 from .store import Store, ToolError, normalize_path
@@ -320,64 +320,63 @@ def undo(store: Store, path: str) -> str:
     return store.undo(normalize_path(path))
 
 
-def read_document(store: Store, path: str, start: int, limit: int, max_chars: int, show_format: bool) -> str:
-    path = normalize_path(path)
-    doc = store.open(path)
-    body = body_paragraphs(doc)
-    tbls = top_tables(doc)
-    pics = all_pictures(doc)
-    tables_by_para: dict[int, list[int]] = {}
-    for ti, (_, pi) in enumerate(tbls):
-        tables_by_para.setdefault(pi, []).append(ti)
-    pic_index = {id(el): i for i, el in enumerate(pics)}
-    lines = [
-        f"{os.path.basename(path)}: {len(doc.sections)} section(s), {len(body)} paragraphs"
-        + (f" (p0-p{len(body) - 1})" if body else "")
-        + f", {len(tbls)} table(s), {len(pics)} image(s)",
-        f"Page: {_page_info(doc)}",
-    ]
-    lost = store.conversion_warnings(doc)
-    if lost:
-        lines.append("WARNING (.hwp conversion): " + "; ".join(lost))
-    end = min(len(body), start + limit)
-    lines.append(f"--- paragraphs p{start}-p{end - 1} ---" if end > start else "--- (no paragraphs in range) ---")
-    for i in range(start, end):
-        p = body[i]
-        el = p.element
-        line = f"p{i} [{_style_name(doc, el.get('styleIDRef'))}] "
-        line += _inline_view(doc, el, pic_index, max_chars)
-        notes = _control_notes(el)
-        if notes:
-            line += "  [" + "; ".join(notes) + "]"
-        if show_format:
-            pdesc = formats.short_para_desc(formats.describe_para_pr(doc, el.get("paraPrIDRef")))
-            cdesc = formats.short_char_desc(formats.describe_char_pr(doc, first_char_pr(el)))
-            distinct = {r.get("charPrIDRef") for r in run_elements(el) if r.find(T_TAG) is not None and any(t_text(t) for t in r.findall(T_TAG))}
-            fmt = "; ".join(x for x in (pdesc, cdesc + (" (+mixed runs)" if len(distinct) > 1 else "")) if x)
-            if fmt:
-                line += f"  {{{fmt}}}"
-        lines.append(line)
-        for ti in tables_by_para.get(i, []):
-            lines.extend(_table_preview(doc, ti, max_chars=40))
-    if end < len(body):
-        lines.append(f"... {len(body) - end} more paragraph(s); call again with start={end}.")
-    return "\n".join(lines)
+def format_summary(doc: HwpxDocument, el) -> str:
+    """Short paragraph + character format of a paragraph, e.g. "center, line 160%; 맑은 고딕 14pt bold"."""
+    pdesc = formats.short_para_desc(formats.describe_para_pr(doc, el.get("paraPrIDRef")))
+    cdesc = formats.short_char_desc(formats.describe_char_pr(doc, first_char_pr(el)))
+    distinct = {r.get("charPrIDRef") for r in run_elements(el) if run_text(r)}
+    return "; ".join(x for x in (pdesc, cdesc + (" (+mixed runs)" if len(distinct) > 1 else "")) if x)
 
 
-def _table_preview(doc: HwpxDocument, ti: int, max_chars: int, max_rows: int = 30) -> list[str]:
+def paragraph_line(doc: HwpxDocument, el, address: str, pic_index: dict, max_chars: int, show_format: bool) -> str:
+    """One listing line: `p3 [style] text  [notes]  {format}`."""
+    line = f"{address} [{_style_name(doc, el.get('styleIDRef'))}] " + _inline_view(doc, el, pic_index, max_chars)
+    notes = _control_notes(el)
+    if notes:
+        line += "  [" + "; ".join(notes) + "]"
+    if show_format:
+        fmt = format_summary(doc, el)
+        if fmt:
+            line += f"  {{{fmt}}}"
+    return line
+
+
+def table_rows(doc: HwpxDocument, ti: int, max_chars: int, rows: range | None = None) -> list[str]:
+    """`tN.rR | c0: ... | c1: ...` lines for the table's rows (all rows, or those in ``rows``)."""
     table = get_table(doc, ti)
-    rows: dict[int, list[str]] = {}
+    by_row: dict[int, list[str]] = {}
     for ci in table_cells(table):
+        if rows is not None and ci.row not in rows:
+            continue
         label = f"c{ci.col}"
         if ci.col_span > 1 or ci.row_span > 1:
             label += f"(merged r{ci.row}-{ci.row + ci.row_span - 1} c{ci.col}-{ci.col + ci.col_span - 1})"
-        rows.setdefault(ci.row, []).append(f"{label}: {_clip(ci.cell.text, max_chars)}")
-    out = []
-    for r in sorted(rows)[:max_rows]:
-        out.append(f"    t{ti}.r{r} | " + " | ".join(rows[r]))
-    if len(rows) > max_rows:
-        out.append(f"    ... {len(rows) - max_rows} more row(s); use hwp_get_table.")
-    return out
+        by_row.setdefault(ci.row, []).append(f"{label}: {_clip(ci.cell.text, max_chars)}")
+    return [f"t{ti}.r{r} | " + " | ".join(by_row[r]) for r in sorted(by_row)]
+
+
+def _result_view(doc: HwpxDocument, addresses: list[str], limit: int = 5, max_chars: int = 160) -> str:
+    """The affected paragraphs as they are now, so the caller can check an edit without re-reading."""
+    if not addresses:
+        return ""
+    pics = all_pictures(doc)
+    pic_index = {id(el): i for i, el in enumerate(pics)}
+    lines = []
+    for addr in addresses[:limit]:
+        t = resolve_one_paragraph(doc, addr)
+        lines.append("  " + paragraph_line(doc, t.paragraph.element, t.address, pic_index, max_chars, True))
+    if len(addresses) > limit:
+        lines.append(f"  ... {len(addresses) - limit} more")
+    return "\nNow:\n" + "\n".join(lines)
+
+
+def _shift_note(first_after: str, delta: int) -> str:
+    """How later addresses moved after inserting/deleting paragraphs before ``first_after``."""
+    m = re.match(r"^(.*?)(\d+)$", first_after)
+    if not m or delta == 0:
+        return ""
+    prefix, n = m.group(1), int(m.group(2))
+    return f"\nAddresses after this point shifted by {delta:+d} (the old {prefix}{n} is now {prefix}{n + delta})."
 
 
 def get_paragraph(store: Store, path: str, target: str) -> dict[str, Any]:
@@ -459,11 +458,25 @@ def insert_paragraph(store: Store, path: str, text: str, after: str | None, styl
             created.append(p.element)
             cursor = _address_of(doc, p.element)
         addresses = [_address_of(doc, e) for e in created]
+        added = len(addresses) - start_idx
+        followed = _next_address(doc, addresses[-1]) is not None
     span = addresses[0] if len(addresses) == 1 else f"{addresses[0]}-{addresses[-1].split('.')[-1]}"
     return (
-        f"Inserted {len(addresses)} paragraph(s) at {span} with style \"{_style_name(doc, str(fmt[0]))}\". "
-        "Paragraphs after the insertion point were renumbered."
+        f"Inserted {len(addresses)} paragraph(s) at {span} with style \"{_style_name(doc, str(fmt[0]))}\"."
+        + (_shift_note(addresses[start_idx], added) if followed else "")
+        + _result_view(doc, addresses)
     )
+
+
+def _next_address(doc: HwpxDocument, address: str) -> str | None:
+    """The address right after ``address`` in the same container, if that paragraph exists."""
+    m = re.match(r"^(.*?)(\d+)$", address)
+    nxt = f"{m.group(1)}{int(m.group(2)) + 1}"
+    try:
+        resolve_one_paragraph(doc, nxt)
+    except ToolError:
+        return None
+    return nxt
 
 
 def set_paragraph_text(store: Store, path: str, target: str, text: str) -> str:
@@ -472,7 +485,7 @@ def set_paragraph_text(store: Store, path: str, target: str, text: str) -> str:
         el = t.paragraph.element
         replace_range(el, 0, len(paragraph_text(el)), text, first_char_pr(el))
         t.paragraph.section.mark_dirty()
-    return f"{t.address} now reads: {_clip(text, 200)}"
+    return f"Replaced the text of {t.address}." + _result_view(doc, [t.address], max_chars=400)
 
 
 def delete_paragraphs(store: Store, path: str, target: str) -> str:
@@ -512,10 +525,23 @@ def delete_paragraphs(store: Store, path: str, target: str) -> str:
                 parent.remove(el)
                 removed.append(t.address)
             group[0].paragraph.section.mark_dirty()
-    msg = f"Deleted {len(removed)} paragraph(s)" + (f": {', '.join(removed[:20])}" if removed else "")
+    msg = f"Deleted {len(removed)} paragraph(s)" + (f": {', '.join(removed[:20])}" if removed else "") + "."
     if cleared:
-        msg += f". Cleared (not removed, a section/cell must keep one paragraph): {', '.join(cleared)}"
-    return msg + ". Remaining paragraphs were renumbered; call hwp_read_document before using more addresses."
+        msg += f" Cleared (not removed, a section/cell must keep one paragraph): {', '.join(cleared)}."
+    if removed:
+        m = re.match(r"^(.*?)(\d+)$", removed[0])
+        prefix, first = m.group(1), int(m.group(2))
+        same = [r for r in removed if r.startswith(prefix) and r[len(prefix):].isdigit()]
+        last = max(int(r[len(prefix):]) for r in same)
+        if len(same) == len(removed) == last - first + 1:  # one contiguous block
+            try:
+                view = _result_view(doc, [removed[0]])
+                msg += f"\nAddresses after it shifted by -{len(removed)} (the old {prefix}{last + 1} is now {removed[0]})." + view
+            except ToolError:
+                pass  # the block was at the end: nothing follows it
+        else:
+            msg += "\nRemaining paragraphs were renumbered; re-read before using more addresses."
+    return msg
 
 
 def replace_text(store: Store, path: str, find: str, replace: str, target: str | None, ignore_case: bool, max_count: int | None) -> str:
@@ -524,7 +550,7 @@ def replace_text(store: Store, path: str, find: str, replace: str, target: str |
     with _Edit(store, path) as doc:
         scope = resolve_paragraphs(doc, target) if target else list(iter_text_paragraphs(doc))
         pattern = re.compile(re.escape(find), re.IGNORECASE if ignore_case else 0)
-        count, where = 0, []
+        count, where, views = 0, [], []
         for t in scope:
             el = t.paragraph.element
             matches = list(pattern.finditer(paragraph_text(el)))
@@ -536,11 +562,17 @@ def replace_text(store: Store, path: str, find: str, replace: str, target: str |
                 count += len(matches)
                 where.append(t.address)
                 t.paragraph.section.mark_dirty()
+                if len(views) < 5:  # earlier text is untouched, so the first match still starts at m.start()
+                    new_text, s = paragraph_text(el), matches[0].start()
+                    a, b = max(0, s - 40), min(len(new_text), s + len(replace) + 40)
+                    views.append(f"  {t.address}: " + ("…" if a else "") + _clip(new_text[a:b], 200)
+                                 + ("…" if b < len(new_text) else ""))
             if max_count is not None and count >= max_count:
                 break
         if count == 0:
             raise ToolError(f'"{find}" was not found' + (f" in {target}" if target else "") + ". Nothing changed.")
-    return f"Replaced {count} occurrence(s) in {', '.join(where[:20])}{' ...' if len(where) > 20 else ''}."
+    return (f"Replaced {count} occurrence(s) in {', '.join(where[:20])}{' ...' if len(where) > 20 else ''}."
+            + "\nNow:\n" + "\n".join(views) + (f"\n  ... {len(where) - 5} more paragraph(s)" if len(where) > 5 else ""))
 
 
 # ---------------------------------------------------------------------------
@@ -609,7 +641,35 @@ def format_text(store: Store, path: str, target: str, match: str | None, occurre
                              lambda runs: formats.apply_char_format(doc, runs, kw))
     applied = ", ".join(f"{k}={v}" for k, v in {**opts, **(extra or {})}.items()
                         if v is not None and (k in formats.CHAR_OPTION_KEYS or k in (extra or {})))
-    return f"Applied {applied} to {len(done)} span(s): {', '.join(done[:15])}{' ...' if len(done) > 15 else ''}."
+    return (f"Applied {applied} to {len(done)} span(s): {', '.join(done[:15])}{' ...' if len(done) > 15 else ''}."
+            + _span_view(doc, done))
+
+
+_SPAN_RE = re.compile(r"^(.*)\[(\d+):(\d+)\]$")
+
+
+def _span_view(doc: HwpxDocument, spans: list[str], limit: int = 5) -> str:
+    """The character format now in effect for formatted spans labelled "address[start:end]"."""
+    lines = []
+    for label in spans[:limit]:
+        m = _SPAN_RE.match(label)
+        if not m:
+            continue
+        el = resolve_one_paragraph(doc, m.group(1)).paragraph.element
+        start, end = int(m.group(2)), int(m.group(3))
+        pos, char_pr = 0, None
+        for run in run_elements(el):
+            n = len(run_text(run))
+            if n and pos <= start < pos + n:
+                char_pr = run.get("charPrIDRef")
+                break
+            pos += n
+        desc = formats.short_char_desc(formats.describe_char_pr(doc, char_pr))
+        lines.append(f'  {label} "{_clip(paragraph_text(el)[start:end], 40)}": {desc}')
+    if not lines:
+        return ""
+    more = f"\n  ... {len(spans) - limit} more" if len(spans) > limit else ""
+    return "\nNow:\n" + "\n".join(lines) + more
 
 
 def set_paragraph_format(store: Store, path: str, target: str, opts: dict[str, Any]) -> str:
@@ -620,7 +680,8 @@ def set_paragraph_format(store: Store, path: str, target: str, opts: dict[str, A
         targets = resolve_paragraphs(doc, target)
         formats.apply_para_format(doc, [t.paragraph for t in targets], kw)
     applied = ", ".join(f"{k}={v}" for k, v in opts.items() if v is not None and k in formats.PARA_OPTION_KEYS)
-    return f"Applied {applied} to {len(targets)} paragraph(s): {', '.join(t.address for t in targets[:15])}{' ...' if len(targets) > 15 else ''}."
+    return (f"Applied {applied} to {len(targets)} paragraph(s): {', '.join(t.address for t in targets[:15])}"
+            f"{' ...' if len(targets) > 15 else ''}." + _result_view(doc, [t.address for t in targets], limit=3, max_chars=60))
 
 
 def list_styles(store: Store, path: str) -> dict[str, Any]:
@@ -635,7 +696,8 @@ def apply_style(store: Store, path: str, target: str, style: str, keep_char_form
         formats.apply_style(doc, [t.paragraph for t in targets], st, keep_char_format)
         para = formats.describe_para_pr(doc, st.get("paraPrIDRef"))
     note = f' Note: this style adds automatic numbering ({para["numbering"]}); do not type numbers like "1." in the text.' if para.get("numbering") else ""
-    return f'Applied style "{st.get("name")}" to {len(targets)} paragraph(s): {", ".join(t.address for t in targets[:15])}.{note}'
+    return (f'Applied style "{st.get("name")}" to {len(targets)} paragraph(s): {", ".join(t.address for t in targets[:15])}.{note}'
+            + _result_view(doc, [t.address for t in targets], limit=3, max_chars=60))
 
 
 def create_style(store: Store, path: str, name: str, base_style: str | None, char_opts: dict, para_opts: dict) -> str:
@@ -779,6 +841,10 @@ def set_cell_text(store: Store, path: str, table: int, data: list[list[Any]], st
     msg = f"Wrote {written} cell(s) in t{table}."
     if skipped:
         msg += " Skipped (write to the merged cell's top-left address instead): " + ", ".join(skipped)
+    shown = range(start_row, start_row + min(len(data), 5))
+    msg += "\nNow:\n" + "\n".join("  " + line for line in table_rows(doc, table, 60, shown))
+    if len(data) > 5:
+        msg += f"\n  ... {len(data) - 5} more row(s)"
     return msg
 
 

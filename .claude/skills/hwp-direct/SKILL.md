@@ -25,7 +25,8 @@ Python with the library installed (created by the VS Code extension):
 ## Workflow (always)
 
 1. **Look first.** Run `python -m hwp_mcp.check FILE --format` (prints validity + every paragraph with its address and format). Addresses: `p12` body paragraph, `t0.r1.c2` table cell, `t0.r1.c2.p0` paragraph in a cell, `t0.r0.c*` whole row, `p3-p8` range.
-2. **Write one script**: open → edits → `doc.save()`.
+   Long document: in a script, `print(doc.outline())` gives the section map (s1, s2.1, ...), then `doc.read("s2.1")` reads one section and `doc.search("예산 집행")` finds the relevant paragraphs.
+2. **Write one script**: open → edits → `print(doc.diff())` → `doc.save()`. `diff()` lists what the script changed compared with the file on disk (text before -> after, added/deleted paragraphs, format changes); check it shows your edits and nothing else.
 3. **Verify**: `python -m hwp_mcp.check FILE --format --png preview.png`, then look at the PNG. The PNG is an approximate preview (no table borders, images show as placeholders, no bullets/auto numbers); use it to check order, text and emphasis, not exact layout.
 
 ```python
@@ -35,6 +36,7 @@ doc = HwpDoc.open(r"C:\docs\report.hwpx")        # new file: HwpDoc.new(path, ov
 print(doc.read(show_format=True))                  # optional: see addresses inside the script
 doc.insert_paragraph("목차", style="개요 1", after="p0")
 doc.set_tabs("p2-p4", [{"pos_mm": doc.text_width_mm(), "type": "right", "leader": "dot"}])
+print(doc.diff())                                  # what changed vs the file on disk
 print(doc.save())                                  # validates; raises and writes nothing if invalid
 ```
 
@@ -52,7 +54,7 @@ print(doc.save())                                  # validates; raises and write
 ## API
 
 ### Same as the MCP tools (no `path` argument, no `hwp_` prefix)
-`read(start=0, limit=300, max_chars=400, show_format=False)`, `get_paragraph(t)`, `find_text(text)`,
+`read(range=None, max_chars=600, show_format=False)` (range: section id `"s2.1"`, `"p10-p40"`, `"p10-"`, `"t3"`; output is size-limited and says where to continue), `outline(section=None, depth=None)`, `search(query, max_results=10)`, `get_paragraph(t)`, `find_text(text)`,
 `insert_paragraph(text, after=None|"start"|"end"|addr, style=None, like=None)` ("\n" = new paragraph, "\t" = tab),
 `set_paragraph_text(t, text)`, `replace_text(find, replace, target=None)`, `delete_paragraphs(t)`,
 `format_text(t, match=None, occurrence=None, start=None, end=None, font=, size_pt=, bold=, italic=, underline=, strikethrough=, color=, highlight=, superscript=, subscript=, char_width_percent=, letter_spacing_percent=)`,
@@ -87,6 +89,7 @@ Extra `format_text` options: `shadow_color="#A0A0A0"`, `outline="SOLID"`, `embos
 | `track_insert(t, text)`, `track_delete(t, match)`, `track_replace(t, old, new)` | 변경 추적 marks |
 | `add_form_field(t, name, prompt=)`, `fill_form_field(name, value)` | 누름틀 |
 | `text_width_mm(section=0)`, `last_paragraph()` | text area width; address of the last body paragraph |
+| `diff(against=None)` | changes in memory vs the file on disk (or vs another file) - call before `save()` |
 | `check()` / `save(path=None)` / `preview_png(out)` | validate / write (new path = save as, .hwp or .hwpx) / approximate PNG |
 
 ### Raw access (read [reference.md](reference.md) first)

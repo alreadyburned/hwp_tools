@@ -15,18 +15,22 @@ from mcp.server.fastmcp.exceptions import ToolError as McpToolError  # noqa: E40
 from mcp.types import ToolAnnotations  # noqa: E402
 from pydantic import Field  # noqa: E402
 
-from . import ops  # noqa: E402
+from . import ops, reader  # noqa: E402
 from .store import Store, ToolError  # noqa: E402
 
 INSTRUCTIONS = """\
 Tools for reading and editing Hangul word-processor documents (.hwpx and .hwp) in place.
 
 Workflow
-1. Call hwp_read_document first. It lists every body paragraph with its address, and table cells.
+1. Find what to edit. Short document: hwp_read_document lists every paragraph with its address.
+   Long document (it says so): hwp_outline for the section map, then hwp_read_document(range="s2.1")
+   for one section, or hwp_search to find the paragraphs about a topic.
 2. Edit with the other tools. Every edit is validated and saved to the file immediately
    (no open/save step). hwp_undo reverts the last edit of a file.
-3. Inserting or deleting paragraphs renumbers the paragraphs after that point; re-read before
-   reusing old addresses.
+3. Check: each edit result shows the affected text as it is now. hwp_diff lists everything the
+   last edit (or the whole session, since="session") changed - use it to confirm nothing else moved.
+4. Inserting or deleting paragraphs renumbers the paragraphs after that point (the result says
+   how); re-read before reusing other old addresses.
 
 Addresses (0-based)
 - p12            body paragraph 12;  p3-p8 range;  p* all body paragraphs
@@ -98,15 +102,58 @@ def hwp_create_document(
 @mcp.tool(annotations=READ)
 def hwp_read_document(
     path: Path_,
-    start: Annotated[int, Field(description="First body paragraph to list.", ge=0)] = 0,
-    limit: Annotated[int, Field(description="Maximum number of body paragraphs to list.", ge=1, le=2000)] = 300,
-    max_chars: Annotated[int, Field(description="Truncate each paragraph's text to this many characters.", ge=20)] = 400,
+    range: Annotated[
+        str | None,
+        Field(description='Part to read. Omit for the start of the document. A section id from hwp_outline '
+              '("s2", "s2.1"), paragraphs ("p10-p40", "p10-" to the end, "p10"), or a table ("t3", "t3.r20-").'),
+    ] = None,
+    max_chars: Annotated[int, Field(description="Truncate each paragraph's text to this many characters.", ge=20)] = 600,
     show_format: Annotated[bool, Field(description="Also show a short paragraph/character format summary per paragraph.")] = False,
 ) -> str:
-    """List the document: page setup, then one line per body paragraph as
-    `p<N> [style] text`, with tables shown as `<table tN>` followed by their cell texts
-    (`tN.r<R> | c0: ... | c1: ...`) and images as `<image gN>`. Use the addresses it prints in all other tools."""
-    return _run(ops.read_document, path, start, limit, max_chars, show_format)
+    """List paragraphs as `p<N> [style] text`, with tables shown as `<table tN>` followed by their
+    cell texts (`tN.r<R> | c0: ... | c1: ...`) and images as `<image gN>`. Use the addresses it prints
+    in all other tools. Output is size-limited; when it stops early it says which range to read next."""
+    return _run(reader.read_document, path, range, max_chars, show_format)
+
+
+@mcp.tool(annotations=READ)
+def hwp_outline(
+    path: Path_,
+    section: Annotated[str | None, Field(description='Show only this section and its subsections, e.g. "s3".')] = None,
+    depth: Annotated[int | None, Field(description="Heading levels to show (default: as many as fit).", ge=1, le=10)] = None,
+) -> str:
+    """Section map of the document: one line per heading with its section id (s1, s2.1, ...),
+    paragraph range, and size. Use it to navigate long documents, then read one section with
+    hwp_read_document(range="<section id>")."""
+    return _run(reader.outline, path, section, depth)
+
+
+@mcp.tool(annotations=READ)
+def hwp_search(
+    path: Path_,
+    query: Annotated[str, Field(description="Words to look for, e.g. \"예산 집행 실적\". Need not be exact.")],
+    max_results: Annotated[int, Field(ge=1, le=50)] = 10,
+) -> str:
+    """Find the paragraphs and table rows most related to the query, best first, with their
+    addresses and section. Word order and endings (조사) need not match; exact phrase matches are
+    marked * and ranked first. For exact character offsets use hwp_find_text."""
+    return _run(reader.search, path, query, max_results)
+
+
+@mcp.tool(annotations=READ)
+def hwp_diff(
+    path: Path_,
+    since: Annotated[
+        Literal["last", "session"],
+        Field(description='"last": what the most recent edit changed. "session": everything changed since the '
+              'first edit of this file in this session.'),
+    ] = "last",
+    against: Annotated[str | None, Field(description="Instead compare with this other file (e.g. the original copy).")] = None,
+) -> str:
+    """Report what changed: text changes (before -> after), added and deleted paragraphs, format
+    changes (style, paragraph, character, cell) and page setup, with current addresses. Use it to
+    verify an edit did what was intended and nothing else."""
+    return _run(reader.diff, path, since, against)
 
 
 @mcp.tool(annotations=READ)
