@@ -1,6 +1,6 @@
 # hwp_tools — AI용 한글 문서 편집 VS Code 확장
 
-Claude Code, VS Code Copilot(에이전트 모드) 같은 AI가 **한글 문서(.hwpx / .hwp)를 직접 만들고 고칠 수 있게** 해 주는 VS Code 확장입니다.
+Claude Code, VS Code Copilot(에이전트 모드), Roo Code / Zoo Code, Kilo Code, Continue 같은 AI 에이전트가 **한글 문서(.hwpx / .hwp)를 직접 읽고, 찾고, 고치고, 고친 결과를 스스로 확인할 수 있게** 해 주는 VS Code 확장입니다. 로컬 LLM처럼 작은 모델을 위한 축소 도구 구성도 제공합니다.
 한컴오피스 없이 동작합니다(순수 Python, [python-hwpx](https://github.com/airmang/python-hwpx) 기반).
 
 ## 구성
@@ -10,18 +10,47 @@ Claude Code, VS Code Copilot(에이전트 모드) 같은 AI가 **한글 문서(.
 | MCP 서버 (`server/hwp_mcp`) | 31개 `hwp_*` 도구. 모든 편집은 스키마·한컴 열기 안전성 검증 후에만 저장, 실패 시 파일 변경 없음 |
 | 직접 실행 API (`server/hwp_mcp/api.py`) | AI가 Python 스크립트로 문서를 편집. MCP 도구 전부 + 고급 기능 + 안전한 XML 직접 편집. 마지막에 한 번 검증·저장 |
 | 검증 명령 (`python -m hwp_mcp.check`) | 파일 검증, 문단 주소·서식 목록, 근사 미리보기 PNG |
-| 스킬 (`skill/hwp-direct`) | Claude Code 스킬: 언제 MCP/스크립트를 쓰는지, 반드시 지킬 규칙, 검증된 레시피, OWPML XML 참조 |
-| VS Code 확장 (`extension.js`) | `~/.hwp-mcp/venv` Python 환경 자동 구성, VS Code MCP 등록, Claude Code용 `.mcp.json`·스킬 설치, `.hwpx/.hwp` 근사 미리보기 |
+| 스킬 (`skill/hwp-direct`) | Claude Code(및 full 구성의 Roo/Zoo Code) 스킬: 언제 MCP/스크립트를 쓰는지, 반드시 지킬 규칙, 검증된 레시피, OWPML XML 참조 |
+| 사용 규칙 (`rules/`) | Roo/Zoo·Kilo·Continue에 설치하는 짧은 사용 규칙(도구 구성별 `hwp-basic.md`, `hwp-full.md`) |
+| VS Code 확장 (`extension.js`, `clients.js`) | `~/.hwp-mcp/venv` Python 환경 자동 구성, 선택한 AI 에이전트에 MCP 서버·규칙·스킬 등록, `.hwpx/.hwp` 근사 미리보기 |
 
 ## 설치
 
 1. `python scripts/build_vsix.py` → `dist/hwp-tools-<버전>.vsix`
 2. `code --install-extension dist/hwp-tools-<버전>.vsix` (확장 ID `local.hwp-tools`; VS Code 확장 ID에는 `_`를 쓸 수 없어 `-` 사용)
 3. VS Code 재시작 → 첫 실행 시 Python 환경을 자동 설치(인터넷 필요, 1회)
-4. Claude Code에서 쓰려면: 명령 팔레트 → **hwp_tools: Claude Code에 HWP MCP 서버·스킬 등록** → Claude Code 재시작 → `/mcp`로 `hwp` 확인
-   (워크스페이스에 `.mcp.json`과 `.claude/skills/hwp-direct/`가 생깁니다. 이 저장소의 `.claude/skills/hwp-direct`는 `skill/hwp-direct`를 설치한 사본입니다.)
+4. 명령 팔레트 → **hwp_tools: AI 에이전트에 HWP 도구 등록** → 쓸 에이전트를 고름(여러 개 가능) → 각 에이전트에서 MCP 서버 목록을 새로 고치거나 VS Code 창을 다시 로드
+   (Claude Code만 쓸 때는 **hwp_tools: Claude Code에 HWP MCP 서버·스킬 등록** 명령도 그대로 쓸 수 있습니다.)
 
 요구 사항: Python 3.10+, VS Code 1.101+.
+
+### 에이전트별 등록 내용
+
+기본값은 Claude Code만 등록하는 것이고, 나머지는 선택입니다(설정 `hwpMcp.clients`). 등록 명령은 선택한 에이전트의 설정 파일을 워크스페이스에 만들거나 기존 파일에 `hwp` 항목만 합쳐 넣습니다. 선택을 해제해도 이미 만든 파일은 지우지 않습니다.
+
+| 에이전트 | 만드는 파일 | 도구 구성 |
+|---|---|---|
+| Claude Code | `.mcp.json`, `.claude/skills/hwp-direct/` | full + 스크립트 스킬 |
+| GitHub Copilot | 없음 (VS Code MCP API로 등록, `hwpMcp.clients`에 있을 때만) | full |
+| Roo Code / Zoo Code | `.roo/mcp.json`, `.roo/rules/hwp-tools.md` (+ full이면 `.roo/skills/hwp-direct/`) | `hwpMcp.localAgentProfile` |
+| Kilo Code (7.x) | `.kilo/kilo.jsonc`의 `mcp.hwp`·`instructions`, `.kilo/rules/hwp-tools.md` | `hwpMcp.localAgentProfile` |
+| Continue | `.continue/mcpServers/hwp.yaml`, `.continue/rules/hwp-tools.md` (항상 적용) | `hwpMcp.localAgentProfile` |
+
+- 기존 `.roo/mcp.json`의 `hwp` 항목에 둔 `alwaysAllow`·`disabledTools`·`timeout` 같은 사용자 설정은 유지합니다.
+- `kilo.jsonc`에 주석이 있으면 주석이 사라지지 않도록 파일을 고치지 않고, 넣을 항목을 클립보드에 복사한 뒤 파일을 열어 줍니다.
+- Continue는 agent 모드에서만 MCP 도구를 씁니다.
+- 예전 Kilo Code(4.x~5.x, `.kilocode/mcp.json`)는 지원하지 않습니다.
+
+### 도구 구성 (full / basic)
+
+Roo/Zoo·Kilo·Continue는 로컬 소형 모델로 쓰는 경우가 많아 기본 구성이 `basic`입니다. 대형 모델로 쓴다면 설정 `hwpMcp.localAgentProfile`을 `full`로 바꾸세요. 바꾸면 설정 파일을 다시 만들지 묻습니다. 서버 단독 실행은 `python -m hwp_mcp --profile basic`(또는 환경 변수 `HWP_MCP_PROFILE=basic`)입니다.
+
+| | full | basic |
+|---|---|---|
+| 도구 | 31개 | 11개: `hwp_outline`, `hwp_read_document`, `hwp_search`, `hwp_get_paragraph`, `hwp_replace_text`, `hwp_set_paragraph_text`, `hwp_insert_paragraph`, `hwp_delete_paragraphs`, `hwp_set_cell_text`, `hwp_diff`, `hwp_undo` |
+| 도구 정의 크기 | 약 9.7k 토큰 | 약 2.6k 토큰 |
+| 서버 안내문 | 약 2.1k 자 | 약 0.8k 자 |
+| 결과 크기 상한 | 읽기 2만 자, diff 8천 자, 개요 150줄 | 읽기 8천 자, diff 4천 자, 개요 60줄 |
 
 ## 도구 (31개)
 
@@ -101,5 +130,8 @@ doc.save()   # 검증 후 저장, 실패하면 파일은 그대로
 <venv python> tests/api_test.py              # 직접 실행 API 전 기능 + 결과 XML 검사
 <venv python> tests/skill_recipes_test.py    # 스킬 문서의 코드 블록을 그대로 실행
 <venv python> tests/reader_test.py           # 개요·범위 읽기·검색·diff (생성한 100쪽 규모 문서 포함)
+node tests/clients_test.js                   # 에이전트별 설정 파일 작성(병합·보존·주석 있는 JSONC)
+node tests/extension_smoke_test.js           # vscode 스텁으로 확장 활성화·등록 명령·Copilot 선택 등록
+# node가 없으면 VS Code의 Electron으로: ELECTRON_RUN_AS_NODE=1 "<VS Code>/Code.exe" tests/clients_test.js | cat
 <venv python> tests/corpus_test.py <샘플 폴더> <작업 폴더>   # 실제 한컴 문서 대상 편집 배터리
 ```

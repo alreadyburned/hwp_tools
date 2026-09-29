@@ -1,8 +1,8 @@
 {
   "name": "hwp-tools",
   "displayName": "hwp_tools — 한글 문서 편집 (AI)",
-  "description": "Lets AI agents (Claude Code, Copilot) create and edit Hangul .hwpx/.hwp documents through an MCP server (formatting, styles, tables, images, page setup) and a Python scripting skill for advanced features (tabs, footnotes, equations, text boxes, sections, tracked changes...). Includes an approximate preview.",
-  "version": "0.2.0",
+  "description": "Lets AI agents (Claude Code, Copilot, Roo/Zoo Code, Kilo Code, Continue) read, navigate and edit Hangul .hwpx/.hwp documents through an MCP server (outline, search, diff, formatting, styles, tables, images, page setup), with a small tool profile for local models and a Python scripting skill for advanced features. Includes an approximate preview.",
+  "version": "0.3.0",
   "publisher": "local",
   "license": "MIT",
   "engines": {
@@ -43,6 +43,11 @@
     ],
     "commands": [
       {
+        "command": "hwpMcp.configureClients",
+        "title": "AI 에이전트에 HWP 도구 등록 (Claude Code, Copilot, Roo/Zoo, Kilo, Continue)",
+        "category": "hwp_tools"
+      },
+      {
         "command": "hwpMcp.configureClaudeCode",
         "title": "Claude Code에 HWP MCP 서버·스킬 등록 (.mcp.json, .claude/skills)",
         "category": "hwp_tools"
@@ -79,6 +84,44 @@
           "type": "string",
           "default": "",
           "description": "Python 3.10+ used to create the extension's private environment (~/.hwp-mcp/venv). Empty = auto-detect (py -3, python, python3)."
+        },
+        "hwpMcp.clients": {
+          "type": "array",
+          "uniqueItems": true,
+          "default": [
+            "claude"
+          ],
+          "items": {
+            "type": "string",
+            "enum": [
+              "claude",
+              "copilot",
+              "roo",
+              "kilo",
+              "continue"
+            ],
+            "enumDescriptions": [
+              "Claude Code: .mcp.json + hwp-direct 스킬 (도구 full)",
+              "GitHub Copilot: VS Code MCP 등록 (도구 full)",
+              "Roo Code / Zoo Code: .roo/mcp.json + .roo/rules",
+              "Kilo Code: .kilo/kilo.jsonc + .kilo/rules",
+              "Continue: .continue/mcpServers + .continue/rules (agent 모드에서만)"
+            ]
+          },
+          "markdownDescription": "HWP 도구를 쓸 AI 에이전트. 기본은 Claude Code만입니다. `hwp_tools: AI 에이전트에 HWP 도구 등록` 명령으로 고르면 여기에 저장되고, 선택한 에이전트의 설정 파일이 워크스페이스에 만들어집니다. Copilot은 이 목록에 있을 때만 VS Code MCP에 등록됩니다."
+        },
+        "hwpMcp.localAgentProfile": {
+          "type": "string",
+          "enum": [
+            "basic",
+            "full"
+          ],
+          "default": "basic",
+          "enumDescriptions": [
+            "11개 도구(찾기·읽기·텍스트 수정·diff·되돌리기), 짧은 안내와 작은 결과 - 로컬 소형 모델용",
+            "31개 전체 도구 + (Roo/Zoo) hwp-direct 스킬 - 대형 모델을 쓸 때"
+          ],
+          "markdownDescription": "Roo/Zoo Code, Kilo Code, Continue에 제공할 도구 구성. 이 에이전트들은 로컬 소형 모델로 쓰는 경우가 많아 기본값이 `basic`입니다. Claude Code와 Copilot은 항상 `full`."
         }
       }
     }

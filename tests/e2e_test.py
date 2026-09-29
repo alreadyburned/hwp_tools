@@ -19,9 +19,9 @@ from hwpx import HwpxDocument
 
 
 class Client:
-    def __init__(self) -> None:
+    def __init__(self, *args: str) -> None:
         env = dict(os.environ, PYTHONIOENCODING="utf-8")
-        self.p = subprocess.Popen([sys.executable, "-m", "hwp_mcp"], stdin=subprocess.PIPE, stdout=subprocess.PIPE,
+        self.p = subprocess.Popen([sys.executable, "-m", "hwp_mcp", *args], stdin=subprocess.PIPE, stdout=subprocess.PIPE,
                                   stderr=subprocess.DEVNULL, env=env)
         self.i = 0
         init = self.req("initialize", {"protocolVersion": "2025-06-18", "capabilities": {},
@@ -167,7 +167,27 @@ def main() -> None:
         assert fh.read(8) == b"\xd0\xcf\x11\xe0\xa1\xb1\x1a\xe1"
     with zipfile.ZipFile(doc_path) as z:
         assert any(n.startswith("BinData/") for n in z.namelist())
+    check_basic_profile(doc_path)
     print("\nALL CHECKS PASSED ->", work)
+
+
+def check_basic_profile(doc_path: str) -> None:
+    """The small-model profile: 11 tools, short instructions, the others unavailable."""
+    b = Client("--profile", "basic")
+    listing = b.req("tools/list")["result"]
+    names = {t["name"] for t in listing["tools"]}
+    assert names == {"hwp_outline", "hwp_read_document", "hwp_search", "hwp_get_paragraph", "hwp_replace_text",
+                     "hwp_set_paragraph_text", "hwp_insert_paragraph", "hwp_delete_paragraphs", "hwp_set_cell_text",
+                     "hwp_diff", "hwp_undo"}, names
+    assert len(b.instructions) < 1000 and "never read or write them as" in b.instructions, b.instructions
+    assert "outputSchema" not in json.dumps(listing), "results are plain text, no structured copy"
+    b.call("hwp_outline", path=doc_path)
+    b.call("hwp_replace_text", path=doc_path, find="핵심 지표", replace="주요 지표")
+    assert "1 changed" in b.call("hwp_diff", path=doc_path)
+    b.call("hwp_undo", path=doc_path)
+    r = b.req("tools/call", {"name": "hwp_format_text", "arguments": {"path": doc_path, "target": "p0", "bold": True}})
+    assert "error" in r or r["result"].get("isError"), r
+    print("basic profile: 11 tools OK")
 
 
 if __name__ == "__main__":

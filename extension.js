@@ -1,7 +1,7 @@
 // hwp_tools VS Code extension.
 //  - keeps a private Python environment (~/.hwp-mcp/venv) with the bundled hwp_mcp server
-//  - registers that server with VS Code's MCP support (Copilot / agent mode)
-//  - writes .mcp.json so Claude Code can use it
+//  - registers that server with the AI agents chosen in hwpMcp.clients: VS Code's MCP support
+//    (Copilot), and workspace config files for Claude Code, Roo/Zoo Code, Kilo Code, Continue
 //  - shows an approximate preview of .hwpx/.hwp files
 'use strict';
 
@@ -10,6 +10,7 @@ const cp = require('child_process');
 const fs = require('fs');
 const os = require('os');
 const path = require('path');
+const clients = require('./clients');
 
 const SERVER_LABEL = 'HWP 문서 편집 (hwp_tools)';
 const SERVER_ENV = { PYTHONIOENCODING: 'utf-8', PYTHONUTF8: '1' };
@@ -152,10 +153,20 @@ function ensureEnvironment(context, force = false) {
 }
 
 // ---------------------------------------------------------------------------
-// MCP registration
+// agent registration
 // ---------------------------------------------------------------------------
-function serverConfig() {
-  return { type: 'stdio', command: venvPython(), args: ['-m', 'hwp_mcp'], env: SERVER_ENV };
+function settings() {
+  return vscode.workspace.getConfiguration('hwpMcp');
+}
+
+function enabledClients() {
+  return settings().get('clients', ['claude']).filter((id) => clients.CLIENTS.some((c) => c.id === id));
+}
+
+/** Tool profile for a client: Claude Code and Copilot run large models; the others often local ones. */
+function profileFor(id) {
+  const client = clients.CLIENTS.find((c) => c.id === id);
+  return client && client.local ? settings().get('localAgentProfile', 'basic') : 'full';
 }
 
 function registerMcpProvider(context) {
@@ -164,11 +175,19 @@ function registerMcpProvider(context) {
     return;
   }
   const version = context.extension.packageJSON.version;
+  const changed = new vscode.EventEmitter();
   context.subscriptions.push(
+    changed,
+    vscode.workspace.onDidChangeConfiguration((e) => {
+      if (e.affectsConfiguration('hwpMcp.clients')) changed.fire();
+    }),
     vscode.lm.registerMcpServerDefinitionProvider('hwpMcp.server', {
-      provideMcpServerDefinitions: async () => [
-        new vscode.McpStdioServerDefinition(SERVER_LABEL, venvPython(), ['-m', 'hwp_mcp'], SERVER_ENV, version),
-      ],
+      onDidChangeMcpServerDefinitions: changed.event,
+      // Copilot (VS Code agent mode) only when chosen in hwpMcp.clients.
+      provideMcpServerDefinitions: async () =>
+        enabledClients().includes('copilot')
+          ? [new vscode.McpStdioServerDefinition(SERVER_LABEL, venvPython(), clients.serverArgs('full'), SERVER_ENV, version)]
+          : [],
       resolveMcpServerDefinition: async (server) => {
         server.command = await ensureEnvironment(context);
         return server;
@@ -184,33 +203,83 @@ async function pickWorkspaceFolder() {
     return undefined;
   }
   if (folders.length === 1) return folders[0];
-  return vscode.window.showWorkspaceFolderPick({ placeHolder: '.mcp.json을 만들 폴더' });
+  return vscode.window.showWorkspaceFolderPick({ placeHolder: 'AI 에이전트 설정 파일을 만들 폴더' });
+}
+
+/** Write the workspace config of each client in ``ids`` and report what was written. */
+async function applyClients(context, ids, folder) {
+  const python = await ensureEnvironment(context);
+  const lines = [];
+  for (const id of ids) {
+    const client = clients.CLIENTS.find((c) => c.id === id);
+    const profile = profileFor(id);
+    const result = clients.configure(id, {
+      folder: folder.uri.fsPath, python, env: SERVER_ENV, profile,
+      extensionPath: context.extensionPath, version: context.extension.packageJSON.version,
+    });
+    const files = result.written.length ? result.written.join(', ') : 'VS Code MCP 목록';
+    lines.push(`${client.label} (${profile}): ${files}` + (result.removed.length ? `; 삭제 ${result.removed.join(', ')}` : ''));
+    log.appendLine(`configured ${id} (${profile}): ${JSON.stringify(result)}`);
+    if (result.manual) {
+      // A config with comments is left alone; the user pastes the entry.
+      await vscode.env.clipboard.writeText(result.manual.snippet);
+      const doc = await vscode.workspace.openTextDocument(path.join(folder.uri.fsPath, result.manual.file));
+      await vscode.window.showTextDocument(doc);
+      vscode.window.showWarningMessage(
+        `hwp_tools: ${result.manual.file}에 주석이 있어 직접 고치지 않았습니다. ` +
+          '클립보드에 복사한 "mcp"와 "instructions" 항목을 붙여 넣으세요.'
+      );
+    }
+  }
+  vscode.window.showInformationMessage(
+    `hwp_tools 등록: ${lines.join(' / ')}. 각 에이전트에서 MCP 서버 목록을 새로 고치거나 VS Code 창을 다시 로드하세요.`
+  );
+}
+
+async function configureClients(context) {
+  const enabled = new Set(enabledClients());
+  const items = clients.CLIENTS.map((c) => ({
+    id: c.id,
+    label: c.label,
+    description: c.local ? `도구 ${settings().get('localAgentProfile', 'basic')}` : '도구 full',
+    detail: c.detail,
+    picked: enabled.has(c.id),
+  }));
+  const picked = await vscode.window.showQuickPick(items, {
+    canPickMany: true,
+    title: 'hwp_tools: HWP 도구를 쓸 AI 에이전트',
+    placeHolder: '선택한 에이전트의 설정 파일을 워크스페이스에 만듭니다 (선택 해제해도 기존 파일은 지우지 않음)',
+  });
+  if (!picked) return;
+  const ids = picked.map((p) => p.id);
+  await settings().update('clients', ids, vscode.ConfigurationTarget.Global);
+  const withFiles = ids.filter((id) => id !== 'copilot');
+  if (withFiles.length === 0) {
+    vscode.window.showInformationMessage(`hwp_tools: ${ids.includes('copilot') ? 'Copilot에 등록했습니다.' : '등록한 에이전트가 없습니다.'}`);
+    return;
+  }
+  const folder = await pickWorkspaceFolder();
+  if (!folder) return;
+  await applyClients(context, ids, folder);
 }
 
 async function configureClaudeCode(context) {
   const folder = await pickWorkspaceFolder();
   if (!folder) return;
-  await ensureEnvironment(context);
-  const file = path.join(folder.uri.fsPath, '.mcp.json');
-  let config = {};
-  if (fs.existsSync(file)) {
-    try {
-      config = JSON.parse(fs.readFileSync(file, 'utf8'));
-    } catch (err) {
-      vscode.window.showErrorMessage(`hwp_tools: ${file}을 읽을 수 없습니다 (JSON 오류). 직접 고친 뒤 다시 실행하세요.`);
-      return;
-    }
-  }
-  config.mcpServers = config.mcpServers || {};
-  config.mcpServers.hwp = serverConfig();
-  fs.writeFileSync(file, JSON.stringify(config, null, 2) + '\n', 'utf8');
-  // The "hwp-direct" skill: scripted editing with hwp_mcp.api for what the MCP tools do not cover.
-  const skillDir = path.join(folder.uri.fsPath, '.claude', 'skills', 'hwp-direct');
-  fs.cpSync(path.join(context.extensionPath, 'skill', 'hwp-direct'), skillDir, { recursive: true });
-  vscode.window.showInformationMessage(
-    `hwp_tools: .mcp.json에 "hwp" 서버를, .claude/skills/hwp-direct에 스킬을 설치했습니다. ` +
-      'Claude Code를 다시 시작한 뒤 /mcp에서 확인하세요.'
+  await applyClients(context, ['claude'], folder);
+}
+
+/** Re-write the local agents' configs when their tool profile changes. */
+async function onProfileChanged(context) {
+  const targets = enabledClients().filter((id) => (clients.CLIENTS.find((c) => c.id === id) || {}).local);
+  if (targets.length === 0) return;
+  const choice = await vscode.window.showInformationMessage(
+    `hwp_tools: 로컬 에이전트 도구 구성이 "${settings().get('localAgentProfile')}"(으)로 바뀌었습니다. 설정 파일을 다시 만들까요?`,
+    '다시 만들기'
   );
+  if (!choice) return;
+  const folder = await pickWorkspaceFolder();
+  if (folder) await applyClients(context, targets, folder);
 }
 
 // ---------------------------------------------------------------------------
@@ -292,9 +361,17 @@ function activate(context) {
       webviewOptions: { retainContextWhenHidden: false },
       supportsMultipleEditorsPerDocument: true,
     }),
+    vscode.commands.registerCommand('hwpMcp.configureClients', () =>
+      configureClients(context).catch((err) => vscode.window.showErrorMessage(`hwp_tools: ${err.message}`))
+    ),
     vscode.commands.registerCommand('hwpMcp.configureClaudeCode', () =>
       configureClaudeCode(context).catch((err) => vscode.window.showErrorMessage(`hwp_tools: ${err.message}`))
     ),
+    vscode.workspace.onDidChangeConfiguration((e) => {
+      if (e.affectsConfiguration('hwpMcp.localAgentProfile')) {
+        onProfileChanged(context).catch((err) => vscode.window.showErrorMessage(`hwp_tools: ${err.message}`));
+      }
+    }),
     vscode.commands.registerCommand('hwpMcp.reinstall', () =>
       ensureEnvironment(context, true).then(
         () => vscode.window.showInformationMessage('hwp_tools: Python 환경을 다시 설치했습니다.'),

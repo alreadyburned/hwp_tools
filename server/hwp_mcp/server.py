@@ -1,8 +1,16 @@
-"""MCP server exposing HWP/HWPX editing tools (stdio transport)."""
+"""MCP server exposing HWP/HWPX editing tools (stdio transport).
+
+    python -m hwp_mcp [--profile full|basic]      (or HWP_MCP_PROFILE=basic)
+
+"full" (default) offers every tool. "basic" offers the few tools a small local model needs to
+find, change and check text, with shorter instructions and smaller results, so the tool list and
+the answers fit a small context window.
+"""
 
 from __future__ import annotations
 
 import json
+import os
 import sys
 import warnings
 
@@ -20,6 +28,7 @@ from .store import Store, ToolError  # noqa: E402
 
 INSTRUCTIONS = """\
 Tools for reading and editing Hangul word-processor documents (.hwpx and .hwp) in place.
+These files are binary/zip: never read or write them as text; always use these tools.
 
 Workflow
 1. Find what to edit. Short document: hwp_read_document lists every paragraph with its address.
@@ -52,7 +61,45 @@ columns, memos, tracked changes, form fields): use the "hwp-direct" skill, which
 with a Python script (hwp_mcp.api).
 """
 
-mcp = FastMCP("hwp", instructions=INSTRUCTIONS)
+BASIC_INSTRUCTIONS = """\
+Tools for Hangul documents (.hwpx, .hwp). These files are binary: never read or write them as
+text; always use these tools with the absolute file path.
+1. Find: hwp_outline shows the sections of a long document. Then hwp_read_document(range="s2")
+   reads one section, or hwp_search("words") finds the paragraphs about a topic.
+2. Edit: hwp_replace_text, hwp_set_paragraph_text, hwp_insert_paragraph, hwp_delete_paragraphs,
+   hwp_set_cell_text. Each edit is saved at once.
+3. Check: read the "Now:" lines of the edit result, then hwp_diff shows everything the edit
+   changed. If it is wrong, hwp_undo.
+Addresses: p12 = paragraph 12; t0.r1.c2 = table 0, row 1, column 2. Inserting or deleting
+paragraphs changes the numbers after that point; the edit result says how.
+"""
+
+# Tools of the "basic" profile: find, change and check text.
+BASIC_TOOLS = {
+    "hwp_outline", "hwp_read_document", "hwp_search", "hwp_get_paragraph", "hwp_replace_text",
+    "hwp_set_paragraph_text", "hwp_insert_paragraph", "hwp_delete_paragraphs", "hwp_set_cell_text",
+    "hwp_diff", "hwp_undo",
+}
+# Result size limits per profile: (read characters, diff characters, outline lines).
+LIMITS = {"full": (reader.READ_BUDGET, reader.DIFF_BUDGET, reader.OUTLINE_MAX_LINES), "basic": (8000, 4000, 60)}
+
+
+def _requested_profile() -> str:
+    args = sys.argv[1:]
+    for i, a in enumerate(args):
+        if a == "--profile" and i + 1 < len(args):
+            return args[i + 1].lower()
+        if a.startswith("--profile="):
+            return a.split("=", 1)[1].lower()
+    return os.environ.get("HWP_MCP_PROFILE", "full").lower()
+
+
+PROFILE = _requested_profile()
+if PROFILE not in LIMITS:
+    sys.exit(f'hwp_mcp: unknown profile "{PROFILE}" (use "full" or "basic")')
+READ_LIMIT, DIFF_LIMIT, OUTLINE_LINES = LIMITS[PROFILE]
+
+mcp = FastMCP("hwp", instructions=BASIC_INSTRUCTIONS if PROFILE == "basic" else INSTRUCTIONS)
 store = Store()
 
 READ = ToolAnnotations(readOnlyHint=True, destructiveHint=False, idempotentHint=True, openWorldHint=False)
@@ -81,7 +128,7 @@ def _run(fn, *args, **kwargs) -> Any:
 # ---------------------------------------------------------------------------
 # documents
 # ---------------------------------------------------------------------------
-@mcp.tool(annotations=EDIT)
+@mcp.tool(annotations=EDIT, structured_output=False)
 def hwp_create_document(
     path: Annotated[str, Field(description="Absolute path for the new file. The extension picks the format: .hwpx (recommended) or .hwp.")],
     overwrite: Annotated[bool, Field(description="Replace the file if it already exists.")] = False,
@@ -99,7 +146,7 @@ def hwp_create_document(
     return _run(ops.create_document, path, overwrite, page)
 
 
-@mcp.tool(annotations=READ)
+@mcp.tool(annotations=READ, structured_output=False)
 def hwp_read_document(
     path: Path_,
     range: Annotated[
@@ -113,10 +160,10 @@ def hwp_read_document(
     """List paragraphs as `p<N> [style] text`, with tables shown as `<table tN>` followed by their
     cell texts (`tN.r<R> | c0: ... | c1: ...`) and images as `<image gN>`. Use the addresses it prints
     in all other tools. Output is size-limited; when it stops early it says which range to read next."""
-    return _run(reader.read_document, path, range, max_chars, show_format)
+    return _run(reader.read_document, path, range, max_chars, show_format, READ_LIMIT)
 
 
-@mcp.tool(annotations=READ)
+@mcp.tool(annotations=READ, structured_output=False)
 def hwp_outline(
     path: Path_,
     section: Annotated[str | None, Field(description='Show only this section and its subsections, e.g. "s3".')] = None,
@@ -125,10 +172,10 @@ def hwp_outline(
     """Section map of the document: one line per heading with its section id (s1, s2.1, ...),
     paragraph range, and size. Use it to navigate long documents, then read one section with
     hwp_read_document(range="<section id>")."""
-    return _run(reader.outline, path, section, depth)
+    return _run(reader.outline, path, section, depth, OUTLINE_LINES)
 
 
-@mcp.tool(annotations=READ)
+@mcp.tool(annotations=READ, structured_output=False)
 def hwp_search(
     path: Path_,
     query: Annotated[str, Field(description="Words to look for, e.g. \"예산 집행 실적\". Need not be exact.")],
@@ -140,7 +187,7 @@ def hwp_search(
     return _run(reader.search, path, query, max_results)
 
 
-@mcp.tool(annotations=READ)
+@mcp.tool(annotations=READ, structured_output=False)
 def hwp_diff(
     path: Path_,
     since: Annotated[
@@ -153,17 +200,17 @@ def hwp_diff(
     """Report what changed: text changes (before -> after), added and deleted paragraphs, format
     changes (style, paragraph, character, cell) and page setup, with current addresses. Use it to
     verify an edit did what was intended and nothing else."""
-    return _run(reader.diff, path, since, against)
+    return _run(reader.diff, path, since, against, DIFF_LIMIT)
 
 
-@mcp.tool(annotations=READ)
+@mcp.tool(annotations=READ, structured_output=False)
 def hwp_get_paragraph(path: Path_, target: Annotated[str, Field(description='One paragraph address, e.g. "p3" or "t0.r1.c2.p0".')]) -> str:
     """Full detail of one paragraph: text, style, paragraph format (alignment, line spacing, indents,
     spacing) and every text run with its character offsets and character format (font, size, bold, color...)."""
     return _run(ops.get_paragraph, path, target)
 
 
-@mcp.tool(annotations=READ)
+@mcp.tool(annotations=READ, structured_output=False)
 def hwp_find_text(
     path: Path_,
     text: Annotated[str, Field(description="Exact text to search for.")],
@@ -175,7 +222,7 @@ def hwp_find_text(
     return _run(ops.find_text, path, text, ignore_case, max_results)
 
 
-@mcp.tool(annotations=EDIT)
+@mcp.tool(annotations=EDIT, structured_output=False)
 def hwp_save_as(
     path: Path_,
     new_path: Annotated[str, Field(description="Absolute path of the copy; .hwpx or .hwp (the extension picks the format).")],
@@ -186,7 +233,7 @@ def hwp_save_as(
     return _run(ops.save_as, path, new_path, overwrite)
 
 
-@mcp.tool(annotations=EDIT)
+@mcp.tool(annotations=EDIT, structured_output=False)
 def hwp_undo(path: Path_) -> str:
     """Revert the most recent edit made to this file through these tools (repeatable)."""
     return _run(ops.undo, path)
@@ -195,7 +242,7 @@ def hwp_undo(path: Path_) -> str:
 # ---------------------------------------------------------------------------
 # text
 # ---------------------------------------------------------------------------
-@mcp.tool(annotations=EDIT)
+@mcp.tool(annotations=EDIT, structured_output=False)
 def hwp_insert_paragraph(
     path: Path_,
     text: Annotated[str, Field(description='Paragraph text. Each "\\n" starts a new paragraph; "\\t" is a tab.')],
@@ -208,7 +255,7 @@ def hwp_insert_paragraph(
     return _run(ops.insert_paragraph, path, text, after, style, like)
 
 
-@mcp.tool(annotations=EDIT)
+@mcp.tool(annotations=EDIT, structured_output=False)
 def hwp_set_paragraph_text(
     path: Path_,
     target: Annotated[str, Field(description='One paragraph address, e.g. "p3" or "t0.r1.c2.p0".')],
@@ -219,7 +266,7 @@ def hwp_set_paragraph_text(
     return _run(ops.set_paragraph_text, path, target, text)
 
 
-@mcp.tool(annotations=EDIT)
+@mcp.tool(annotations=EDIT, structured_output=False)
 def hwp_replace_text(
     path: Path_,
     find: Annotated[str, Field(description="Exact text to replace.")],
@@ -232,7 +279,7 @@ def hwp_replace_text(
     return _run(ops.replace_text, path, find, replace, target, ignore_case, max_count)
 
 
-@mcp.tool(annotations=DESTRUCTIVE)
+@mcp.tool(annotations=DESTRUCTIVE, structured_output=False)
 def hwp_delete_paragraphs(path: Path_, target: Target) -> str:
     """Delete paragraphs (including any table or image they hold). A section or table cell always keeps
     one paragraph; if every paragraph of one would be deleted, the last one is emptied instead."""
@@ -242,7 +289,7 @@ def hwp_delete_paragraphs(path: Path_, target: Target) -> str:
 # ---------------------------------------------------------------------------
 # formatting
 # ---------------------------------------------------------------------------
-@mcp.tool(annotations=EDIT)
+@mcp.tool(annotations=EDIT, structured_output=False)
 def hwp_format_text(
     path: Path_,
     target: Target,
@@ -272,7 +319,7 @@ def hwp_format_text(
     return _run(ops.format_text, path, target, match, occurrence, start, end, opts)
 
 
-@mcp.tool(annotations=EDIT)
+@mcp.tool(annotations=EDIT, structured_output=False)
 def hwp_set_paragraph_format(
     path: Path_,
     target: Target,
@@ -296,14 +343,14 @@ def hwp_set_paragraph_format(
     return _run(ops.set_paragraph_format, path, target, opts)
 
 
-@mcp.tool(annotations=READ)
+@mcp.tool(annotations=READ, structured_output=False)
 def hwp_list_styles(path: Path_) -> str:
     """List the document's styles (스타일) with id, name, type and a format summary. Styles marked
     auto_numbering add their own numbers/bullets (e.g. 개요 1 -> "1."), so do not type numbers into such paragraphs."""
     return _run(ops.list_styles, path)
 
 
-@mcp.tool(annotations=EDIT)
+@mcp.tool(annotations=EDIT, structured_output=False)
 def hwp_apply_style(
     path: Path_,
     target: Target,
@@ -315,7 +362,7 @@ def hwp_apply_style(
     return _run(ops.apply_style, path, target, style, keep_char_format)
 
 
-@mcp.tool(annotations=EDIT)
+@mcp.tool(annotations=EDIT, structured_output=False)
 def hwp_create_style(
     path: Path_,
     name: Annotated[str, Field(description="New style name.")],
@@ -341,7 +388,7 @@ def hwp_create_style(
     return _run(ops.create_style, path, name, base_style, char_opts, para_opts)
 
 
-@mcp.tool(annotations=EDIT)
+@mcp.tool(annotations=EDIT, structured_output=False)
 def hwp_set_list(
     path: Path_,
     target: Annotated[str, Field(description='Body paragraph address(es), e.g. "p3-p7".')],
@@ -359,7 +406,7 @@ def hwp_set_list(
 # ---------------------------------------------------------------------------
 # tables
 # ---------------------------------------------------------------------------
-@mcp.tool(annotations=EDIT)
+@mcp.tool(annotations=EDIT, structured_output=False)
 def hwp_insert_table(
     path: Path_,
     after: After = None,
@@ -374,7 +421,7 @@ def hwp_insert_table(
     return _run(ops.insert_table, path, after, rows, cols, data, column_widths_mm, header_row)
 
 
-@mcp.tool(annotations=READ)
+@mcp.tool(annotations=READ, structured_output=False)
 def hwp_get_table(
     path: Path_,
     table: Annotated[int, Field(description="Table index N from tN.", ge=0)],
@@ -384,7 +431,7 @@ def hwp_get_table(
     return _run(ops.get_table_info, path, table, include_format)
 
 
-@mcp.tool(annotations=EDIT)
+@mcp.tool(annotations=EDIT, structured_output=False)
 def hwp_set_cell_text(
     path: Path_,
     table: Annotated[int, Field(description="Table index N from tN.", ge=0)],
@@ -397,19 +444,19 @@ def hwp_set_cell_text(
     return _run(ops.set_cell_text, path, table, data, start_row, start_col)
 
 
-@mcp.tool(annotations=EDIT)
+@mcp.tool(annotations=EDIT, structured_output=False)
 def hwp_merge_cells(path: Path_, cells: Annotated[str, Field(description='Rectangular cell range, e.g. "t0.r0.c0-2" (row 0, columns 0-2) or "t0.r1-3.c0".')]) -> str:
     """Merge a rectangular range of cells into one (셀 합치기). The merged cell keeps the top-left address."""
     return _run(ops.merge_cells, path, cells)
 
 
-@mcp.tool(annotations=EDIT)
+@mcp.tool(annotations=EDIT, structured_output=False)
 def hwp_split_cell(path: Path_, cell: Annotated[str, Field(description='Address of a merged cell, e.g. "t0.r0.c0".')]) -> str:
     """Split a merged cell back into its original single cells (셀 나누기)."""
     return _run(ops.split_cell, path, cell)
 
 
-@mcp.tool(annotations=EDIT)
+@mcp.tool(annotations=EDIT, structured_output=False)
 def hwp_format_cells(
     path: Path_,
     cells: Annotated[str, Field(description='Cell address(es), e.g. "t0.r0.c*" (row 0), "t0.r*.c*" (all), "t0.r1-3.c2".')],
@@ -428,7 +475,7 @@ def hwp_format_cells(
                 vertical_align=vertical_align, padding_mm=padding_mm)
 
 
-@mcp.tool(annotations=DESTRUCTIVE)
+@mcp.tool(annotations=DESTRUCTIVE, structured_output=False)
 def hwp_table_structure(
     path: Path_,
     table: Annotated[int, Field(description="Table index N from tN.", ge=0)],
@@ -441,7 +488,7 @@ def hwp_table_structure(
     return _run(ops.table_structure, path, table, action, index, count)
 
 
-@mcp.tool(annotations=EDIT)
+@mcp.tool(annotations=EDIT, structured_output=False)
 def hwp_set_table_layout(
     path: Path_,
     table: Annotated[int, Field(description="Table index N from tN.", ge=0)],
@@ -458,7 +505,7 @@ def hwp_set_table_layout(
 # ---------------------------------------------------------------------------
 # images
 # ---------------------------------------------------------------------------
-@mcp.tool(annotations=EDIT)
+@mcp.tool(annotations=EDIT, structured_output=False)
 def hwp_insert_image(
     path: Path_,
     image_path: Annotated[str, Field(description="Absolute path of a PNG, JPEG, GIF or BMP file.")],
@@ -472,7 +519,7 @@ def hwp_insert_image(
     return _run(ops.insert_image, path, image_path, after, width_mm, height_mm, align)
 
 
-@mcp.tool(annotations=DESTRUCTIVE)
+@mcp.tool(annotations=DESTRUCTIVE, structured_output=False)
 def hwp_edit_image(
     path: Path_,
     image: Annotated[int, Field(description="Image index N from gN (see hwp_read_document).", ge=0)],
@@ -487,7 +534,7 @@ def hwp_edit_image(
 # ---------------------------------------------------------------------------
 # page
 # ---------------------------------------------------------------------------
-@mcp.tool(annotations=EDIT)
+@mcp.tool(annotations=EDIT, structured_output=False)
 def hwp_page_setup(
     path: Path_,
     section: Annotated[int, Field(description="Section index (most documents have only section 0).", ge=0)] = 0,
@@ -509,7 +556,7 @@ def hwp_page_setup(
     return _run(ops.page_setup, path, section, page)
 
 
-@mcp.tool(annotations=EDIT)
+@mcp.tool(annotations=EDIT, structured_output=False)
 def hwp_set_header_footer(
     path: Path_,
     kind: Literal["header", "footer"],
@@ -521,6 +568,12 @@ def hwp_set_header_footer(
 ) -> str:
     """Set (or remove) the page header (머리말) or footer (꼬리말), optionally with an automatic page number."""
     return _run(ops.header_footer, path, kind, text, page_number, align, section, remove)
+
+
+if PROFILE == "basic":
+    for _name in [n for n in globals() if n.startswith("hwp_")]:  # every tool is a function named after it
+        if _name not in BASIC_TOOLS:
+            mcp.remove_tool(_name)
 
 
 def main() -> None:

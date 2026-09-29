@@ -284,7 +284,8 @@ def _span(sec: Section) -> str:
 # ---------------------------------------------------------------------------
 # hwp_outline
 # ---------------------------------------------------------------------------
-def outline(store: Store, path: str, section: str | None = None, depth: int | None = None) -> str:
+def outline(store: Store, path: str, section: str | None = None, depth: int | None = None,
+            max_lines: int = OUTLINE_MAX_LINES) -> str:
     path = normalize_path(path)
     doc = store.open(path)
     m = build_map(doc)
@@ -302,7 +303,7 @@ def outline(store: Store, path: str, section: str | None = None, depth: int | No
         depth, total = 1, 0
         for d in sorted(lines_by_depth):
             total += lines_by_depth[d]
-            if total > OUTLINE_MAX_LINES and d > 1:
+            if total > max_lines and d > 1:
                 break
             depth = d
     total_chars = sum(m.chars)
@@ -744,7 +745,8 @@ def _open_bytes(data: bytes | None) -> HwpxDocument | None:
         raise ToolError(f"Cannot open the earlier version for comparison: {exc}") from exc
 
 
-def diff(store: Store, path: str, since: str = "last", against: str | None = None) -> str:
+def diff(store: Store, path: str, since: str = "last", against: str | None = None,
+         budget: int = DIFF_BUDGET) -> str:
     path = normalize_path(path)
     new = store.open(path)
     if against:
@@ -759,4 +761,4 @@ def diff(store: Store, path: str, since: str = "last", against: str | None = Non
         label = "Changes by the last edit" if since == "last" else "Changes in this session"
         if old is None:
             label += " (the file was created then)"
-    return f"{label}:\n" + diff_documents(old, new)
+    return f"{label}:\n" + diff_documents(old, new, budget)
