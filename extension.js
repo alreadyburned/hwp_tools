@@ -283,6 +283,95 @@ async function onProfileChanged(context) {
 }
 
 // ---------------------------------------------------------------------------
+// semantic search (optional embeddings)
+// ---------------------------------------------------------------------------
+function embeddingSettings() {
+  const s = settings();
+  return {
+    provider: s.get('embedding.provider', 'none'),
+    ollama_url: s.get('embedding.ollamaUrl', 'http://localhost:11434'),
+    ollama_model: s.get('embedding.ollamaModel', 'bge-m3'),
+  };
+}
+
+/** The server re-reads ~/.hwp-mcp/settings.json on every search, so no agent config needs rewriting. */
+function writeServerSettings() {
+  const file = path.join(envRoot(), 'settings.json');
+  let current = {};
+  try {
+    current = JSON.parse(fs.readFileSync(file, 'utf8'));
+  } catch (_) {
+    // missing or unreadable: start fresh
+  }
+  current.embedding = embeddingSettings();
+  fs.mkdirSync(envRoot(), { recursive: true });
+  fs.writeFileSync(file, JSON.stringify(current, null, 2) + '\n', 'utf8');
+}
+
+/** Run `python -m hwp_mcp.embed <cmd>`, passing "PROGRESS <pct> <msg>" lines to ``onProgress``. */
+function runEmbed(python, cmd, onProgress) {
+  return new Promise((resolve) => {
+    const child = cp.spawn(python, ['-m', 'hwp_mcp.embed', cmd], { windowsHide: true, env: { ...process.env, ...SERVER_ENV } });
+    let last = '';
+    let buf = '';
+    const onData = (d) => {
+      buf += d.toString('utf8');
+      const lines = buf.split(/\r?\n/);
+      buf = lines.pop();
+      for (const line of lines) {
+        const m = /^PROGRESS (\d+) (.*)$/.exec(line);
+        if (m) onProgress(Number(m[1]), m[2]);
+        else if (line.trim()) {
+          last = line.trim();
+          log.appendLine(line);
+        }
+      }
+    };
+    child.stdout.on('data', onData);
+    child.stderr.on('data', (d) => log.append(d.toString('utf8')));
+    child.on('error', (err) => resolve({ ok: false, message: String(err) }));
+    child.on('close', (code) => {
+      if (buf.trim()) last = buf.trim();
+      resolve({ ok: code === 0, message: last.replace(/^ERROR /, '') });
+    });
+  });
+}
+
+/** Install the runtime and download the model for the chosen provider (no-op when off or ready). */
+async function prepareEmbedding(context, { force = false } = {}) {
+  writeServerSettings();
+  const conf = embeddingSettings();
+  if (conf.provider === 'none') return;
+  const python = await ensureEnvironment(context);
+  if (!force) {
+    const status = await runEmbed(python, 'status', () => {});
+    if (status.ok && status.message.startsWith('ready')) return;
+  }
+  const label = conf.provider === 'ollama' ? `Ollama ${conf.ollama_model}` : '내장 모델 multilingual-e5-small (약 135MB)';
+  const result = await withInstallLock(() =>
+    vscode.window.withProgress(
+      { location: vscode.ProgressLocation.Notification, title: `hwp_tools: 의미 검색 준비 — ${label}` },
+      async (progress) => {
+        let done = 0;
+        return runEmbed(python, 'prepare', (pct, msg) => {
+          progress.report({ message: msg, increment: Math.max(0, pct - done) });
+          done = Math.max(done, pct);
+        });
+      }
+    )
+  );
+  if (!result.ok) throw new Error(`의미 검색 준비 실패: ${result.message}`);
+  vscode.window.showInformationMessage(`hwp_tools: ${result.message}. hwp_search가 뜻이 비슷한 문단도 찾습니다.`);
+}
+
+function reportEmbeddingError(err) {
+  log.appendLine(String(err.stack || err));
+  vscode.window.showErrorMessage(`hwp_tools: ${err.message}`, '로그 보기').then((choice) => {
+    if (choice) log.show();
+  });
+}
+
+// ---------------------------------------------------------------------------
 // preview
 // ---------------------------------------------------------------------------
 function escapeHtml(s) {
@@ -367,14 +456,21 @@ function activate(context) {
     vscode.commands.registerCommand('hwpMcp.configureClaudeCode', () =>
       configureClaudeCode(context).catch((err) => vscode.window.showErrorMessage(`hwp_tools: ${err.message}`))
     ),
+    vscode.commands.registerCommand('hwpMcp.prepareEmbedding', () =>
+      prepareEmbedding(context, { force: true }).catch(reportEmbeddingError)
+    ),
     vscode.workspace.onDidChangeConfiguration((e) => {
       if (e.affectsConfiguration('hwpMcp.localAgentProfile')) {
         onProfileChanged(context).catch((err) => vscode.window.showErrorMessage(`hwp_tools: ${err.message}`));
       }
+      if (e.affectsConfiguration('hwpMcp.embedding')) prepareEmbedding(context).catch(reportEmbeddingError);
     }),
     vscode.commands.registerCommand('hwpMcp.reinstall', () =>
       ensureEnvironment(context, true).then(
-        () => vscode.window.showInformationMessage('hwp_tools: Python 환경을 다시 설치했습니다.'),
+        () => {
+          vscode.window.showInformationMessage('hwp_tools: Python 환경을 다시 설치했습니다.');
+          return prepareEmbedding(context).catch(reportEmbeddingError); // the new venv lacks the embedding runtime
+        },
         (err) => vscode.window.showErrorMessage(`hwp_tools: ${err.message}`)
       )
     ),
@@ -385,13 +481,17 @@ function activate(context) {
     vscode.commands.registerCommand('hwpMcp.showLog', () => log.show())
   );
 
-  // Prepare the environment in the background so the first tool call is fast.
-  ensureEnvironment(context).catch((err) => {
-    log.appendLine(String(err.stack || err));
-    vscode.window.showErrorMessage(`hwp_tools: Python 환경 준비 실패 — ${err.message}`, '로그 보기').then((choice) => {
-      if (choice) log.show();
-    });
-  });
+  // Prepare the environment (and the embedding model, if semantic search is on) in the background
+  // so the first tool call is fast.
+  ensureEnvironment(context).then(
+    () => prepareEmbedding(context).catch(reportEmbeddingError),
+    (err) => {
+      log.appendLine(String(err.stack || err));
+      vscode.window.showErrorMessage(`hwp_tools: Python 환경 준비 실패 — ${err.message}`, '로그 보기').then((choice) => {
+        if (choice) log.show();
+      });
+    }
+  );
 }
 
 function deactivate() {}

@@ -183,7 +183,8 @@ def hwp_search(
 ) -> str:
     """Find the paragraphs and table rows most related to the query, best first, with their
     addresses and section. Word order and endings (조사) need not match; exact phrase matches are
-    marked * and ranked first. For exact character offsets use hwp_find_text."""
+    marked * and ranked first. When meaning search is enabled, parts with a similar meaning but
+    different words are included too, marked ~. For exact character offsets use hwp_find_text."""
     return _run(reader.search, path, query, max_results)
 
 

@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "hwp-mcp"
-version = "0.3.0"
+version = "0.4.0"
 description = "MCP server for editing Hangul (HWP/HWPX) documents with fine-grained formatting tools"
 requires-python = ">=3.10"
 license = { text = "MIT" }
@@ -14,6 +14,10 @@ dependencies = [
     "python-hwpx[preview]==6.6.0",
     "mcp==1.28.1",
 ]
+
+[project.optional-dependencies]
+# Semantic search (hwp_mcp.embed). "python -m hwp_mcp.embed prepare" installs these on demand.
+embed = ["onnxruntime>=1.20", "tokenizers>=0.20", "numpy>=1.26"]
 
 [project.scripts]
 hwp-mcp-server = "hwp_mcp.server:main"

@@ -50,7 +50,9 @@ const vscode = {
       get: (key, dflt) => (key in config ? config[key] : dflt),
       update: async (key, value) => {
         config[key] = value;
-        configListeners.forEach((fn) => fn({ affectsConfiguration: (k) => k === `hwpMcp.${key}` }));
+        // like VS Code, a section matches its sub-keys ("hwpMcp.embedding" covers "hwpMcp.embedding.provider")
+        const changed = `hwpMcp.${key}`;
+        configListeners.forEach((fn) => fn({ affectsConfiguration: (k) => changed === k || changed.startsWith(k + '.') }));
       },
     }),
     onDidChangeConfiguration: (fn) => { configListeners.push(fn); return disposable; },
@@ -58,7 +60,7 @@ const vscode = {
     createFileSystemWatcher: () => ({ onDidChange() {}, onDidCreate() {}, dispose() {} }),
   },
   window: {
-    createOutputChannel: () => ({ appendLine() {}, append() {}, show() {}, dispose() {} }),
+    createOutputChannel: () => ({ appendLine: (l) => process.env.HWP_TEST_LOG && console.log('[log]', l), append: (l) => process.env.HWP_TEST_LOG && console.log('[log]', String(l).trim()), show() {}, dispose() {} }),
     showInformationMessage: async (msg) => { messages.push(msg); return answers.info; },
     showWarningMessage: async (msg) => { messages.push(msg); },
     showErrorMessage: async (msg) => { messages.push('ERROR ' + msg); },
@@ -73,6 +75,49 @@ const originalLoad = Module._load;
 Module._load = function (request, ...rest) {
   return request === 'vscode' ? vscode : originalLoad.call(this, request, ...rest);
 };
+
+// ---- semantic search setup ------------------------------------------------------
+// Needs a real Python with numpy: HWP_TEST_VENV=<venv dir>. Its interpreter stands in for the
+// extension's venv, and a fake Ollama server answers the model pull.
+async function checkEmbedding() {
+  const testVenv = process.env.HWP_TEST_VENV;
+  if (!testVenv) {
+    console.log('(semantic search setup skipped: set HWP_TEST_VENV to a venv with numpy)');
+    return;
+  }
+  fs.copyFileSync(path.join(testVenv, 'Scripts', 'python.exe'), venvPy);
+  fs.copyFileSync(path.join(testVenv, 'pyvenv.cfg'), path.join(home, '.hwp-mcp', 'venv', 'pyvenv.cfg'));
+  process.env.PYTHONPATH = [path.join(root, 'server'), path.join(testVenv, 'Lib', 'site-packages')].join(path.delimiter);
+  const http = require('http');
+  let pulled = false;
+  const server = http.createServer((req, res) => {
+    let body = '';
+    req.on('data', (d) => (body += d));
+    req.on('end', () => {
+      if (req.url === '/api/tags') return res.end(JSON.stringify({ models: pulled ? [{ name: 'bge-m3:latest' }] : [] }));
+      if (req.url === '/api/pull') {
+        pulled = true;
+        return res.end([0, 60, 100].map((c) => JSON.stringify({ status: 'pulling', total: 100, completed: c })).join('\n') + '\n');
+      }
+      if (req.url === '/api/embed' && pulled) return res.end(JSON.stringify({ embeddings: JSON.parse(body).input.map(() => [1, 0, 0]) }));
+      res.statusCode = 404;
+      res.end('{}');
+    });
+  });
+  await new Promise((r) => server.listen(0, '127.0.0.1', r));
+  const url = `http://127.0.0.1:${server.address().port}`;
+  const before = messages.length;
+  const cfg = vscode.workspace.getConfiguration('hwpMcp');
+  config['embedding.ollamaUrl'] = url;
+  await cfg.update('embedding.provider', 'ollama'); // triggers prepareEmbedding
+  for (let i = 0; i < 600 && messages.length === before; i++) await new Promise((r) => setTimeout(r, 100));
+  server.close();
+  const written = JSON.parse(fs.readFileSync(path.join(home, '.hwp-mcp', 'settings.json'), 'utf8'));
+  assert.deepStrictEqual(written.embedding, { provider: 'ollama', ollama_url: url, ollama_model: 'bge-m3' });
+  const msg = messages[messages.length - 1];
+  assert.ok(pulled && msg.includes('Semantic search ready: ollama:bge-m3'), messages.slice(before).join('\n'));
+  console.log(msg);
+}
 
 // ---- run -----------------------------------------------------------------------
 (async () => {
@@ -118,6 +163,7 @@ Module._load = function (request, ...rest) {
   assert.ok(!messages.some((m) => m.startsWith('ERROR')), messages.join('\n'));
   console.log(messages[messages.length - 1]);
 
+  await checkEmbedding();
   console.log(`\nEXTENSION SMOKE TEST PASSED -> ${workspace}`);
 })().catch((err) => {
   console.error(err);

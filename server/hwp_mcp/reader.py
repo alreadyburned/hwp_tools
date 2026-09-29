@@ -22,7 +22,7 @@ from typing import Any
 
 from hwpx import HwpxDocument
 
-from . import formats
+from . import embed, formats
 from .model import (
     T_TAG, all_pictures, body_paragraphs, first_char_pr, get_table, hu_to_mm, paragraph_text,
     run_elements, run_text, t_text, table_cells, top_tables,
@@ -197,7 +197,7 @@ def _build_tree(headings: dict[int, int], texts, n: int) -> list[Section]:
     stack: list[Section] = []
     first = min(headings) if headings else n
     if first > 0:
-        top.append(Section("s0", 1, "(before the first heading)", 0, first - 1))
+        top.append(Section("s0", 1, "(start of document)", 0, first - 1))
     counter = 0
     for i in sorted(headings):
         level = headings[i]
@@ -289,6 +289,7 @@ def outline(store: Store, path: str, section: str | None = None, depth: int | No
     path = normalize_path(path)
     doc = store.open(path)
     m = build_map(doc)
+    _warm(doc, m)
     roots = m.sections
     if section:
         roots = [m.find(section.strip().lower())]
@@ -354,6 +355,7 @@ def read_document(store: Store, path: str, range_: str | None = None, max_chars:
     path = normalize_path(path)
     doc = store.open(path)
     m = build_map(doc)
+    _warm(doc, m)
     n = len(m.body)
     spec = (range_ or "").strip().lower().replace(" ", "")
     pics = all_pictures(doc)
@@ -536,19 +538,57 @@ def search(store: Store, path: str, query: str, max_results: int = 10) -> str:
     if ranked:
         top = scores[ranked[0]]
         ranked = [i for i in ranked if exact[i] or scores[i] >= 0.1 * top]
+    meaning_only: set[int] = set()
+    sims, note = embed.similarities([_embed_text(m, u) for u in units], q)
+    if sims is not None:
+        # Reciprocal rank fusion of the keyword ranking and the meaning ranking.
+        by_meaning = sorted((i for i, s in enumerate(sims) if s is not None), key=lambda i: sims[i], reverse=True)
+        if by_meaning:
+            # Similarities of unrelated text are not near zero (e5: ~0.75), so keep only the parts that
+            # stand out: at least halfway from the median to the best one. Works for any model's scale.
+            best, median = sims[by_meaning[0]], sims[by_meaning[len(by_meaning) // 2]]
+            floor = median + (best - median) / 2
+            by_meaning = [i for i in by_meaning[:max(20, 2 * max_results)] if sims[i] >= floor or i in ranked]
+        fused: Counter = Counter()
+        for ranking in (ranked, by_meaning):
+            for r, i in enumerate(ranking):
+                fused[i] += 1 / (RRF_K + r)
+        meaning_only = set(by_meaning) - set(ranked)
+        ranked = sorted(fused, key=lambda i: (exact[i], fused[i]), reverse=True)
     if not ranked:
-        return f'No match for "{q}". Try other words, fewer words, or hwp_outline to browse the sections.'
-    lines = [f'{len(ranked)} matching part(s) for "{q}"; best {min(len(ranked), max_results)} first'
-             + (" (exact phrase matches marked *)" if any(exact[i] for i in ranked) else "") + ":"]
+        return (f'No match for "{q}". Try other words, fewer words, or hwp_outline to browse the sections.'
+                + (f" ({note})" if note else ""))
+    mode = "keywords + meaning" if sims is not None else "keywords"
+    marks = [x for x, used in (("* exact phrase", any(exact[i] for i in ranked)),
+                               ("~ related by meaning only", bool(meaning_only))) if used]
+    lines = [f'{len(ranked)} candidate part(s) for "{q}" ({mode}); best {min(len(ranked), max_results)} first'
+             + (f" ({', '.join(marks)})" if marks else "") + ":"]
+    if note:
+        lines.append(f"Note: {note}.")
     for i in ranked[:max_results]:
         u = units[i]
         where = m.path_of(u.index)
         sec = f"[{where[-1].sid} {_clip(where[-1].title, 24)}] " if where else ""
         body = _snippet(u.display, q, idf) if u.address.startswith("p") else _clip(u.display, 240)
-        lines.append(f"{'*' if exact[i] else ' '}{u.address} {sec}{body}")
+        lines.append(f"{'*' if exact[i] else '~' if i in meaning_only else ' '}{u.address} {sec}{body}")
     if len(ranked) > max_results:
         lines.append(f"... {len(ranked) - max_results} more; refine the query or raise max_results.")
     return "\n".join(lines)
+
+
+RRF_K = 60
+
+
+def _embed_text(m: DocMap, u: _Unit) -> str:
+    """What is embedded for a search unit: its section title gives a short paragraph context."""
+    where = m.path_of(u.index)
+    return f"{where[-1].title}: {u.text}" if where and where[-1].sid != "s0" else u.text
+
+
+def _warm(doc: HwpxDocument, m: DocMap) -> None:
+    """Start embedding the document in the background when semantic search is on."""
+    if embed.settings()["provider"] not in ("", "none", "off"):
+        embed.warm([_embed_text(m, u) for u in _units(doc, m)])
 
 
 # ---------------------------------------------------------------------------

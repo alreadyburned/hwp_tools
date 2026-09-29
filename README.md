@@ -80,10 +80,26 @@ Roo/Zoo·Kilo·Continue는 로컬 소형 모델로 쓰는 경우가 많아 기�
 
 1. `hwp_outline`: 제목으로 절 지도를 만듭니다. 제목은 개요 스타일(개요 수준) → 공문서 번호 체계(`Ⅰ.` `1.` `가.` `1)` `□` ...) → 글자 크기·굵기 순으로 판별하고, 제목이 없으면 약 4천 자 단위로 나눕니다. 어떤 방법을 썼는지 결과에 표시됩니다.
 2. `hwp_read_document(range="s2.1")`: 한 절만 읽습니다. 결과는 크기 제한이 있고, 잘리면 다음에 읽을 범위를 알려 줍니다.
-3. `hwp_search`: 한글은 글자 2-gram, 그 밖의 단어는 통째로 색인한 BM25 검색입니다(추가 의존성 없음). 조사·어순이 달라도 찾고, 정확히 일치하는 구절은 `*`로 표시해 앞에 둡니다.
+3. `hwp_search`: 한글은 글자 2-gram, 그 밖의 단어는 통째로 색인한 BM25 검색입니다(추가 의존성 없음). 조사·어순이 달라도 찾고, 정확히 일치하는 구절은 `*`로 표시해 앞에 둡니다. 의미 검색을 켜면(아래) 단어가 달라도 뜻이 비슷한 문단을 함께 찾아 `~`로 표시합니다.
 4. `hwp_diff`: undo 기록을 기준으로 바뀐 문단을 문단 단위로 맞춰 텍스트(전→후), 추가/삭제, 스타일·문단·글자·셀 서식, 쪽 설정 변경을 보여 줍니다. 편집이 의도대로 됐고 다른 곳은 바뀌지 않았는지 한 번에 확인할 수 있습니다.
 
 주소와 절 번호는 호출할 때마다 문서에서 새로 계산하므로 편집 뒤에도 항상 현재 값입니다.
+
+### 의미 검색 (선택)
+
+기본값은 꺼짐이고, 이때 `hwp_search`는 키워드 검색만 하며 추가 설치가 없습니다. 설정 `hwpMcp.embedding.provider`로 켭니다.
+
+| 값 | 모델 | 내려받는 것 | 특징 |
+|---|---|---|---|
+| `none` (기본) | - | 없음 | 키워드(BM25)만 |
+| `builtin` | [multilingual-e5-small](https://huggingface.co/intfloat/multilingual-e5-small) int8 ONNX (MIT) | 런타임(onnxruntime·tokenizers·numpy, 약 30MB) + 모델(약 135MB) | CPU로 동작, 671문단 문서 최초 색인 약 2초 |
+| `ollama` | Ollama의 임베딩 모델 (기본 `bge-m3`, `hwpMcp.embedding.ollamaModel`) | numpy, 모델이 없으면 `ollama pull` | 더 정확, Ollama 설치 필요 (`hwpMcp.embedding.ollamaUrl`) |
+
+- 설정을 바꾸면 확장이 필요한 것을 온라인에서 내려받습니다(진행률 알림). 명령 **hwp_tools: 의미 검색 준비**로 다시 시도할 수 있습니다. 내장 모델은 저장소 리비전과 SHA-256을 고정해 검증합니다.
+- 설정은 `~/.hwp-mcp/settings.json`에 기록되고 서버가 검색할 때마다 읽으므로, 에이전트 설정 파일을 다시 만들거나 서버를 다시 시작할 필요가 없습니다.
+- 키워드 순위와 의미 순위를 역순위 융합(RRF)으로 합칩니다. 의미로만 찾은 결과는 문서 안에서 유사도가 눈에 띄게 높은 것만 남겨(중앙값과 최고값의 중간 이상) 관련 없는 문단이 섞이지 않게 합니다.
+- 벡터는 `~/.hwp-mcp/cache/vectors.sqlite`에 문단 텍스트 해시로 저장합니다. 편집 뒤에는 바뀐 문단만 다시 계산합니다. `hwp_outline`·`hwp_read_document`를 부르면 백그라운드에서 미리 색인하고, 검색 때 색인이 덜 끝났으면 가능한 만큼만 쓰고 그 사실을 결과에 적습니다.
+- 준비가 안 됐거나 실패하면(모델 없음, Ollama 꺼짐 등) 키워드 결과를 그대로 돌려주고 이유를 `Note:`로 알려 줍니다.
 
 ## 직접 실행 방식 (스킬 `hwp-direct`)
 
@@ -132,6 +148,8 @@ doc.save()   # 검증 후 저장, 실패하면 파일은 그대로
 <venv python> tests/reader_test.py           # 개요·범위 읽기·검색·diff (생성한 100쪽 규모 문서 포함)
 node tests/clients_test.js                   # 에이전트별 설정 파일 작성(병합·보존·주석 있는 JSONC)
 node tests/extension_smoke_test.js           # vscode 스텁으로 확장 활성화·등록 명령·Copilot 선택 등록
+                                             #   HWP_TEST_VENV=<numpy가 있는 venv>이면 가짜 Ollama로 의미 검색 준비까지
+<numpy가 있는 python> tests/embed_test.py [--real]   # 의미 검색: 융합·캐시·백그라운드 색인·Ollama(가짜 서버), --real이면 내장 모델 실제 다운로드
 # node가 없으면 VS Code의 Electron으로: ELECTRON_RUN_AS_NODE=1 "<VS Code>/Code.exe" tests/clients_test.js | cat
 <venv python> tests/corpus_test.py <샘플 폴더> <작업 폴더>   # 실제 한컴 문서 대상 편집 배터리
 ```

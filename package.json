@@ -2,7 +2,7 @@
   "name": "hwp-tools",
   "displayName": "hwp_tools — 한글 문서 편집 (AI)",
   "description": "Lets AI agents (Claude Code, Copilot, Roo/Zoo Code, Kilo Code, Continue) read, navigate and edit Hangul .hwpx/.hwp documents through an MCP server (outline, search, diff, formatting, styles, tables, images, page setup), with a small tool profile for local models and a Python scripting skill for advanced features. Includes an approximate preview.",
-  "version": "0.3.0",
+  "version": "0.4.0",
   "publisher": "local",
   "license": "MIT",
   "engines": {
@@ -45,6 +45,11 @@
       {
         "command": "hwpMcp.configureClients",
         "title": "AI 에이전트에 HWP 도구 등록 (Claude Code, Copilot, Roo/Zoo, Kilo, Continue)",
+        "category": "hwp_tools"
+      },
+      {
+        "command": "hwpMcp.prepareEmbedding",
+        "title": "의미 검색 준비 (임베딩 모델 다운로드/확인)",
         "category": "hwp_tools"
       },
       {
@@ -122,6 +127,31 @@
             "31개 전체 도구 + (Roo/Zoo) hwp-direct 스킬 - 대형 모델을 쓸 때"
           ],
           "markdownDescription": "Roo/Zoo Code, Kilo Code, Continue에 제공할 도구 구성. 이 에이전트들은 로컬 소형 모델로 쓰는 경우가 많아 기본값이 `basic`입니다. Claude Code와 Copilot은 항상 `full`."
+        },
+        "hwpMcp.embedding.provider": {
+          "type": "string",
+          "enum": [
+            "none",
+            "builtin",
+            "ollama"
+          ],
+          "default": "none",
+          "enumDescriptions": [
+            "끔: hwp_search는 키워드(BM25)만 사용 - 추가 설치 없음",
+            "내장 모델 multilingual-e5-small(int8): 처음 켤 때 런타임(약 30MB)과 모델(약 135MB)을 내려받음, CPU로 동작",
+            "Ollama 서버의 임베딩 모델(기본 bge-m3, 더 정확하지만 큼): 모델이 없으면 ollama pull로 내려받음"
+          ],
+          "markdownDescription": "`hwp_search`의 의미 검색. 켜면 단어가 달라도 뜻이 비슷한 문단을 키워드 결과와 합쳐 보여 줍니다(`~` 표시). 설정을 바꾸면 필요한 것을 온라인에서 내려받고, 서버는 다시 시작할 필요가 없습니다."
+        },
+        "hwpMcp.embedding.ollamaUrl": {
+          "type": "string",
+          "default": "http://localhost:11434",
+          "description": "embedding.provider가 ollama일 때 Ollama 서버 주소."
+        },
+        "hwpMcp.embedding.ollamaModel": {
+          "type": "string",
+          "default": "bge-m3",
+          "description": "embedding.provider가 ollama일 때 쓸 임베딩 모델 (다국어 모델 권장: bge-m3)."
         }
       }
     }
