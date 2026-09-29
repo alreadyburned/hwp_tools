@@ -54,7 +54,7 @@ function run(command, args, options = {}) {
 async function runChecked(command, args, options) {
   const r = await run(command, args, { logStderr: true, ...options });
   if (r.code !== 0) {
-    throw new Error(`${path.basename(command)} ${args.slice(0, 3).join(' ')} failed (exit ${r.code}): ${r.stderr.slice(-1500)}`);
+    throw new Error(`${path.basename(command)} ${args.slice(0, 3).join(' ')} failed (exit ${r.code}): ${(r.stderr.trim() || r.stdout).slice(-1500)}`);
   }
   return r;
 }
@@ -140,13 +140,22 @@ function ensureEnvironment(context, force = false) {
       await vscode.window.withProgress(
         { location: vscode.ProgressLocation.Notification, title: 'hwp_tools: Python 환경 준비 중' },
         async (progress) => {
-          if (force && fs.existsSync(path.join(envRoot(), 'venv'))) {
-            fs.rmSync(path.join(envRoot(), 'venv'), { recursive: true, force: true });
+          const venvDir = path.join(envRoot(), 'venv');
+          // A venv whose creation failed half-way (Debian/Ubuntu without python3-venv) has
+          // bin/python but no pip; rebuild it instead of failing in pip install every time.
+          if (fs.existsSync(venvDir) && (force || (await run(py, ['-m', 'pip', '--version'])).code !== 0)) {
+            if (!force) log.appendLine(`Removing broken environment (no working pip): ${venvDir}`);
+            fs.rmSync(venvDir, { recursive: true, force: true });
           }
           if (!fs.existsSync(py)) {
             progress.report({ message: '가상환경 생성…' });
             const base = await findBasePython();
-            await runChecked(base.cmd, [...base.pre, '-m', 'venv', path.join(envRoot(), 'venv')]);
+            try {
+              await runChecked(base.cmd, [...base.pre, '-m', 'venv', venvDir]);
+            } catch (err) {
+              fs.rmSync(venvDir, { recursive: true, force: true }); // don't leave a half-made venv behind
+              throw err;
+            }
           }
           progress.report({ message: 'python-hwpx / mcp 설치…' });
           // Build from a temporary copy so pip does not write build files into the extension folder.
